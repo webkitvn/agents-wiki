@@ -1,18 +1,22 @@
-@/Users/cuongpham/.codex/RTK.md
-
 # Agents Wiki Project Instructions
 
 This is a Rust CLI for local-first Obsidian wiki tooling. Keep changes focused on deterministic file operations, clear CLI behavior, and safe vault path handling.
 
+## Design Source
+
+The design follows the LLM-wiki pattern documented in [docs/llm-wiki.md](docs/llm-wiki.md): immutable `raw/` sources, an LLM-maintained `wiki/`, a schema file (this `AGENTS.md`), plus the ingest / query / lint operations and the `index.md` + `log.md` conventions. Use it as the reference when deciding behavior; the CLI provides deterministic primitives while synthesis stays the LLM's job.
+
+## Keep the Skill in Sync
+
+[skills/agents-wiki/SKILL.md](skills/agents-wiki/SKILL.md) is the user-facing CLI usage guide. Whenever a change affects the CLI's command surface or behavior (commands, flags, arguments, output format, or vault resolution), update `SKILL.md` in the same change so it stays accurate. Update its `description` trigger phrases too if the intended use cases change.
+
 ## Development Commands
 
-Run commands through `rtk`:
-
 ```bash
-rtk cargo fmt --check
-rtk cargo clippy --all-targets --all-features --locked -- -D warnings
-rtk cargo test --locked
-rtk cargo build --release --locked
+cargo fmt --check
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test --locked
+cargo build --release --locked
 ```
 
 Use the full check set for Rust code changes. For docs-only changes, no Rust verification is required unless the docs describe behavior that should be checked.

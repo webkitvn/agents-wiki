@@ -80,6 +80,7 @@ pub fn positional(args: &[String]) -> Vec<String> {
         "--source",
         "--context",
         "--limit",
+        "--stale-days",
         "--vault",
     ];
     let mut out = Vec::new();
