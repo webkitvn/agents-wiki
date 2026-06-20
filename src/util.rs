@@ -249,8 +249,8 @@ pub fn update_frontmatter_field(path: &Path, key: &str, value: &str) -> Result<(
     }
     let text = read_text(path);
     let line = format!("{key}: {value}");
-    if text.starts_with("---\n") {
-        if let Some(end_rel) = text[4..].find("\n---") {
+    if let Some(frontmatter) = text.strip_prefix("---\n") {
+        if let Some(end_rel) = frontmatter.find("\n---") {
             let end = 4 + end_rel;
             let mut header: Vec<String> =
                 text[4..end].lines().map(|item| item.to_string()).collect();
@@ -327,8 +327,7 @@ pub fn move_path(src: &Path, dest: &Path) -> Result<PathBuf, String> {
     fs::rename(src, &dest)
         .or_else(|_| {
             if src.is_dir() {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                Err(std::io::Error::other(
                     "cross-device directory move unsupported",
                 ))
             } else {
