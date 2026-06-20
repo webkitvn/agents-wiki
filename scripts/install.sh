@@ -1,13 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_url="${AGENTS_WIKI_REPO_URL:-https://github.com/webkitvn/agents-wiki.git}"
+repo_ref="${AGENTS_WIKI_INSTALL_REF:-main}"
+repo_root=""
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
 bin_dir="${HOME}/.local/bin"
 config_dir="${HOME}/.agents-wiki"
 config_file="${config_dir}/config.yml"
 vault_path="${HOME}/Documents/Agents Wiki"
 force_config=0
 vault_arg_provided=0
+
+usage() {
+  echo "Usage: ./scripts/install.sh [--vault PATH] [--bin-dir PATH] [--force-config]"
+}
+
+if [[ -z "${repo_root}" || ! -f "${repo_root}/Cargo.toml" ]]; then
+  for arg in "$@"; do
+    case "${arg}" in
+      -h|--help)
+        usage
+        exit 0
+        ;;
+    esac
+  done
+
+  if ! command -v git >/dev/null 2>&1; then
+    echo "git is required to install agents-wiki from ${repo_url}" >&2
+    exit 1
+  fi
+
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "${tmp_dir}"' EXIT
+
+  echo "Downloading agents-wiki from ${repo_url} (${repo_ref})..."
+  git clone --depth 1 --branch "${repo_ref}" "${repo_url}" "${tmp_dir}/agents-wiki"
+  bash "${tmp_dir}/agents-wiki/scripts/install.sh" "$@"
+  exit $?
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,7 +67,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      echo "Usage: ./scripts/install.sh [--vault PATH] [--bin-dir PATH] [--force-config]"
+      usage
       exit 0
       ;;
     *)

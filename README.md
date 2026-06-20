@@ -10,6 +10,12 @@ Local-first Obsidian wiki tooling for AI agents.
 ./scripts/install.sh
 ```
 
+Or install directly from GitHub:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/webkitvn/agents-wiki/main/scripts/install.sh | bash
+```
+
 Common options:
 
 ```bash
@@ -78,4 +84,3 @@ cargo build --release
 ## License
 
 MIT
-
