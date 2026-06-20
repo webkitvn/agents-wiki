@@ -7,15 +7,18 @@ config_dir="${HOME}/.agents-wiki"
 config_file="${config_dir}/config.yml"
 vault_path="${HOME}/Documents/Agents Wiki"
 force_config=0
+vault_arg_provided=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --vault)
       vault_path="${2:?--vault requires a path}"
+      vault_arg_provided=1
       shift 2
       ;;
     --vault=*)
       vault_path="${1#--vault=}"
+      vault_arg_provided=1
       shift
       ;;
     --bin-dir)
@@ -42,6 +45,23 @@ while [[ $# -gt 0 ]]; do
 done
 
 mkdir -p "${bin_dir}" "${config_dir}"
+
+if [[ -f "${config_file}" && "${force_config}" -eq 0 && "${vault_arg_provided}" -eq 1 ]]; then
+  existing_vault="$(
+    sed -nE 's/^[[:space:]]*vault_path:[[:space:]]*"(.*)"[[:space:]]*$/\1/p' "${config_file}" | head -n 1
+  )"
+  if [[ -z "${existing_vault}" ]]; then
+    existing_vault="$(
+      sed -nE 's/^[[:space:]]*vault_path:[[:space:]]*([^[:space:]].*)$/\1/p' "${config_file}" | head -n 1
+    )"
+  fi
+  if [[ -n "${existing_vault}" && "${existing_vault}" != "${vault_path}" ]]; then
+    echo "Existing ${config_file} uses vault_path: \"${existing_vault}\"." >&2
+    echo "Refusing to ignore requested --vault: \"${vault_path}\"." >&2
+    echo "Run with --force-config to update ${config_file}." >&2
+    exit 1
+  fi
+fi
 
 cargo build --release --manifest-path "${repo_root}/Cargo.toml"
 rm -f "${bin_dir}/agents-wiki"

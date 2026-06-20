@@ -303,10 +303,16 @@ fn repair_doctor(ctx: &Ctx) -> Result<Vec<String>, String> {
             repaired.push(format!("Created `{}`.", ctx.rel(&dir)));
         }
     }
-    write_if_missing(ctx, &ctx.index(), index_skeleton())?;
-    write_if_missing(ctx, &ctx.log(), log_skeleton())?;
-    write_if_missing(ctx, &ctx.agents(), agents_skeleton())?;
-    write_if_missing(ctx, &ctx.entrypoint(), entrypoint_skeleton())?;
+    for (path, content) in [
+        (ctx.index(), index_skeleton()),
+        (ctx.log(), log_skeleton()),
+        (ctx.agents(), agents_skeleton()),
+        (ctx.entrypoint(), entrypoint_skeleton()),
+    ] {
+        if write_if_missing(&path, content)? {
+            repaired.push(format!("Created `{}`.", ctx.rel(&path)));
+        }
+    }
 
     for dir in [ctx.archive(), ctx.trash()] {
         let keep = dir.join(".gitkeep");
@@ -343,13 +349,13 @@ fn repair_doctor(ctx: &Ctx) -> Result<Vec<String>, String> {
     Ok(repaired)
 }
 
-fn write_if_missing(_ctx: &Ctx, path: &Path, content: String) -> Result<(), String> {
+fn write_if_missing(path: &Path, content: String) -> Result<bool, String> {
     if path.exists() {
-        return Ok(());
+        return Ok(false);
     }
     fs::create_dir_all(path.parent().unwrap()).map_err(|err| err.to_string())?;
     fs::write(path, content).map_err(|err| err.to_string())?;
-    Ok(())
+    Ok(true)
 }
 
 fn index_skeleton() -> String {
@@ -425,4 +431,53 @@ fn pending_source_items(ctx: &Ctx) -> Vec<String> {
         .filter(|path| !summary_exists(ctx, path))
         .map(|path| ctx.rel(&path))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        env,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn temp_vault(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        env::temp_dir().join(format!("agents-wiki-{name}-{nonce}"))
+    }
+
+    #[test]
+    fn repair_reports_created_core_notes() {
+        let vault = temp_vault("repair-core-notes");
+        let ctx = Ctx::new(vault.clone());
+
+        let repaired = repair_doctor(&ctx).unwrap();
+
+        for expected in [
+            "Created `wiki/index.md`.",
+            "Created `wiki/log.md`.",
+            "Created `AGENTS.md`.",
+            "Created `LLM Wiki.md`.",
+        ] {
+            assert!(
+                repaired.iter().any(|item| item == expected),
+                "missing repair entry: {expected}\nactual: {repaired:#?}"
+            );
+        }
+        assert!(ctx.index().exists());
+        assert!(ctx.log().exists());
+        assert!(ctx.agents().exists());
+        assert!(ctx.entrypoint().exists());
+
+        let repaired_again = repair_doctor(&ctx).unwrap();
+        assert!(!repaired_again
+            .iter()
+            .any(|item| item == "Created `wiki/index.md`."));
+
+        fs::remove_dir_all(vault).unwrap();
+    }
 }
