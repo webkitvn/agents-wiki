@@ -5,9 +5,10 @@ use crate::{
     args::{has_flag, opt_value, required_pos},
     context::Ctx,
     util::{
-        append_log, canonical_id_for_existing, canonical_id_for_file, canonical_id_for_new,
-        markdown_files, page_path, read_text, recursive_files, resolve_vault_path, slugify,
-        source_files, source_id_for, source_records, summary_exists, today, write_new,
+        add_index_entry, append_log, canonical_id_for_existing, canonical_id_for_file,
+        canonical_id_for_new, markdown_files, page_path, read_text, recursive_files,
+        resolve_vault_path, slugify, source_files, source_id_for, source_records, summary_exists,
+        today, write_new,
     },
 };
 
@@ -202,6 +203,7 @@ pub fn source_summary(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
         ctx.rel(&raw)
     );
     write_new(ctx, &path, &content)?;
+    add_index_entry(ctx, "Sources", &ctx.rel(&path), &title)?;
     append_log(
         ctx,
         "ingest",
@@ -228,6 +230,14 @@ pub fn page(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
         today()
     );
     write_new(ctx, &path, &content)?;
+    let section = match kind.as_str() {
+        "entity" => "Entities",
+        "concept" => "Concepts",
+        "question" => "Questions",
+        "review" => "Reviews",
+        _ => unreachable!("kind validated above"),
+    };
+    add_index_entry(ctx, section, &ctx.rel(&path), title)?;
     append_log(
         ctx,
         kind,
@@ -254,6 +264,7 @@ pub fn review(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
         today()
     );
     write_new(ctx, &path, &content)?;
+    add_index_entry(ctx, "Reviews", &ctx.rel(&path), title)?;
     append_log(
         ctx,
         "review",
@@ -305,31 +316,35 @@ pub fn reviews(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
 
 pub fn search(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
     let pos = required_pos(args, 1, "search <query> [--limit N]")?;
-    let query = pos[0].to_lowercase();
     let limit: usize = opt_value(args, "--limit")
         .and_then(|value| value.parse().ok())
         .unwrap_or(20);
-    let mut count = 0;
+    for line in search_matches(ctx, &pos[0], limit) {
+        println!("{line}");
+    }
+    Ok(0)
+}
+
+fn search_matches(ctx: &Ctx, query: &str, limit: usize) -> Vec<String> {
+    let query = query.to_lowercase();
+    let mut out = Vec::new();
     for root in [ctx.raw(), ctx.wiki()] {
         for path in recursive_files(&root) {
             if path.extension() == Some(OsStr::new("pyc")) {
                 continue;
             }
             let text = read_text(&path);
-            if let Some((index, line)) = text
-                .lines()
-                .enumerate()
-                .find(|(_, line)| line.to_lowercase().contains(&query))
-            {
-                println!("{}:{}: {}", ctx.rel(&path), index + 1, line.trim());
-                count += 1;
-                if count >= limit {
-                    return Ok(0);
+            for (index, line) in text.lines().enumerate() {
+                if line.to_lowercase().contains(&query) {
+                    out.push(format!("{}:{}: {}", ctx.rel(&path), index + 1, line.trim()));
+                    if out.len() >= limit {
+                        return out;
+                    }
                 }
             }
         }
     }
-    Ok(0)
+    out
 }
 
 pub fn log(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
@@ -362,4 +377,42 @@ pub fn open(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
         .status()
         .map_err(|err| err.to_string())?;
     Ok(status.code().unwrap_or(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        env, fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn temp_vault(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        env::temp_dir().join(format!("agents-wiki-{name}-{nonce}"))
+    }
+
+    #[test]
+    fn search_returns_all_matches_and_respects_limit() {
+        let vault = temp_vault("search-matches");
+        let ctx = Ctx::new(vault.clone());
+        fs::create_dir_all(ctx.wiki()).unwrap();
+        fs::write(
+            ctx.wiki().join("note.md"),
+            "alpha line\nbeta\nalpha again\nalpha third\n",
+        )
+        .unwrap();
+
+        let all = search_matches(&ctx, "alpha", 20);
+        assert_eq!(all.len(), 3, "expected every matching line: {all:#?}");
+
+        let limited = search_matches(&ctx, "alpha", 2);
+        assert_eq!(limited.len(), 2, "limit should cap matches: {limited:#?}");
+
+        fs::remove_dir_all(vault).unwrap();
+    }
 }

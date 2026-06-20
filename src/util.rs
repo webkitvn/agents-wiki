@@ -353,6 +353,77 @@ pub fn source_records(ctx: &Ctx) -> Vec<Value> {
         .collect()
 }
 
+/// Insert a wikilink entry under the given `## {section}` heading in `index.md`.
+/// Idempotent: does nothing if the target page is already referenced.
+pub fn add_index_entry(
+    ctx: &Ctx,
+    section: &str,
+    rel_path: &str,
+    title: &str,
+) -> Result<(), String> {
+    let index = ctx.index();
+    let link_target = rel_path.strip_suffix(".md").unwrap_or(rel_path);
+    let entry = format!("- [[{link_target}]] — {title}");
+    let mut text = read_text(&index);
+    if text
+        .lines()
+        .any(|line| line.contains(&format!("[[{link_target}]]")))
+    {
+        return Ok(());
+    }
+    let heading = format!("## {section}");
+    let mut lines: Vec<String> = text.lines().map(|line| line.to_string()).collect();
+    if let Some(start) = lines.iter().position(|line| line.trim() == heading) {
+        let mut insert_at = lines.len();
+        for (offset, line) in lines.iter().enumerate().skip(start + 1) {
+            if line.starts_with("## ") {
+                insert_at = offset;
+                break;
+            }
+        }
+        while insert_at > start + 1 && lines[insert_at - 1].trim().is_empty() {
+            insert_at -= 1;
+        }
+        lines.insert(insert_at, entry);
+        text = lines.join("\n");
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+    } else {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&format!("\n{heading}\n\n{entry}\n"));
+    }
+    fs::create_dir_all(index.parent().unwrap()).map_err(|err| err.to_string())?;
+    fs::write(&index, text).map_err(|err| err.to_string())
+}
+
+/// Whole days from `start` to `end` for `YYYY-MM-DD` dates (negative if end precedes start).
+pub fn days_between(start: &str, end: &str) -> Option<i64> {
+    let (sy, sm, sd) = parse_ymd(start)?;
+    let (ey, em, ed) = parse_ymd(end)?;
+    Some(days_from_civil(ey, em, ed) - days_from_civil(sy, sm, sd))
+}
+
+fn parse_ymd(text: &str) -> Option<(i64, i64, i64)> {
+    let mut parts = text.trim().splitn(3, '-');
+    let year = parts.next()?.parse().ok()?;
+    let month = parts.next()?.parse().ok()?;
+    let day = parts.next()?.trim().parse().ok()?;
+    Some((year, month, day))
+}
+
+/// Days since 1970-01-01 (Howard Hinnant's proleptic Gregorian algorithm).
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = (if year >= 0 { year } else { year - 399 }) / 400;
+    let yoe = year - era * 400;
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
 pub fn summary_exists(ctx: &Ctx, raw_path: &Path) -> bool {
     let summaries = ctx.wiki().join("sources");
     if !summaries.exists() {
@@ -365,4 +436,52 @@ pub fn summary_exists(ctx: &Ctx, raw_path: &Path) -> bool {
         let text = read_text(&page);
         text.contains(&raw_rel) || text.contains(&raw_id) || text.contains(&raw_canonical_id)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_vault(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        env::temp_dir().join(format!("agents-wiki-{name}-{nonce}"))
+    }
+
+    #[test]
+    fn add_index_entry_files_under_section_and_is_idempotent() {
+        let vault = temp_vault("index-entry");
+        let ctx = Ctx::new(vault.clone());
+        fs::create_dir_all(ctx.wiki()).unwrap();
+        fs::write(ctx.index(), "# Wiki Index\n\n## Sources\n\n## Concepts\n").unwrap();
+
+        add_index_entry(&ctx, "Sources", "wiki/sources/foo.md", "Foo").unwrap();
+        add_index_entry(&ctx, "Sources", "wiki/sources/foo.md", "Foo").unwrap();
+
+        let text = read_text(&ctx.index());
+        assert_eq!(
+            text.matches("[[wiki/sources/foo]]").count(),
+            1,
+            "entry must be idempotent: {text}"
+        );
+        let sources_pos = text.find("## Sources").unwrap();
+        let concepts_pos = text.find("## Concepts").unwrap();
+        let entry_pos = text.find("[[wiki/sources/foo]]").unwrap();
+        assert!(
+            entry_pos > sources_pos && entry_pos < concepts_pos,
+            "entry must sit under Sources: {text}"
+        );
+
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn days_between_handles_ordering_and_invalid_input() {
+        assert_eq!(days_between("2026-01-01", "2026-01-31"), Some(30));
+        assert_eq!(days_between("2026-03-01", "2026-02-01"), Some(-28));
+        assert_eq!(days_between("not-a-date", "2026-01-01"), None);
+    }
 }

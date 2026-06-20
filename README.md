@@ -64,6 +64,30 @@ agents-wiki source-summary "raw/source.md"
 agents-wiki lint
 ```
 
+Search and logging:
+
+```bash
+agents-wiki search "query" --limit 20
+agents-wiki log <kind> "Title" --line "Detail line"
+```
+
+`search` matches case-insensitively across `raw/` and `wiki/`, printing
+`path:line: text` for every matching line (defaults to 20 results, override
+with `--limit`).
+
+`source-summary`, `page`, and `review` automatically file the new page into
+`wiki/index.md` under the matching section and append an entry to `wiki/log.md`.
+
+`lint` reports missing index entries, missing citations, duplicate ids, orphan
+pages (no inbound links), and stale active pages. Override the staleness window
+with `--stale-days N` (default 90).
+
+Open a vault path in Obsidian:
+
+```bash
+agents-wiki open "wiki/concepts/foo.md"
+```
+
 Lifecycle commands:
 
 ```bash

@@ -9,14 +9,22 @@ use std::{
 };
 
 use crate::{
-    args::has_flag,
+    args::{has_flag, opt_value},
     context::{Ctx, GITIGNORE_RULES},
     lifecycle::trash_entries,
-    util::{append_log, frontmatter, markdown_files, read_text, source_files, summary_exists},
+    util::{
+        append_log, days_between, frontmatter, markdown_files, read_text, source_files,
+        summary_exists, today,
+    },
 };
 
+const DEFAULT_STALE_DAYS: i64 = 90;
+
 pub fn lint(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
-    let report = lint_report(ctx);
+    let stale_days = opt_value(args, "--stale-days")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(DEFAULT_STALE_DAYS);
+    let report = lint_report(ctx, stale_days);
     if has_flag(args, "--json") {
         println!("{}", serde_json::to_string_pretty(&report).unwrap());
     } else {
@@ -123,9 +131,10 @@ pub fn doctor(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
     )
 }
 
-pub fn lint_report(ctx: &Ctx) -> Value {
+pub fn lint_report(ctx: &Ctx, stale_days: i64) -> Value {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
+    let today_str = today();
     for required in [ctx.raw(), ctx.assets(), ctx.wiki(), ctx.index(), ctx.log()] {
         if !required.exists() {
             errors.push(format!("missing {}", ctx.rel(&required)));
@@ -165,6 +174,18 @@ pub fn lint_report(ctx: &Ctx) -> Value {
                 "active wiki page may lack raw citation: {}",
                 ctx.rel(&page)
             ));
+        }
+        if fields.get("status").is_some_and(|value| value == "active") {
+            if let Some(date) = fields.get("updated").or_else(|| fields.get("created")) {
+                if let Some(age) = days_between(date, &today_str) {
+                    if age > stale_days {
+                        warnings.push(format!(
+                            "stale active page ({age}d since {date}): {}",
+                            ctx.rel(&page)
+                        ));
+                    }
+                }
+            }
         }
         if page.parent().and_then(|parent| parent.file_name()) == Some(OsStr::new("sources"))
             && fields.get("status").is_some_and(|value| value == "draft")
@@ -236,6 +257,33 @@ pub fn lint_report(ctx: &Ctx) -> Value {
         }
     }
 
+    let wiki_pages = markdown_files(&ctx.wiki());
+    let page_texts: Vec<(std::path::PathBuf, String)> = wiki_pages
+        .iter()
+        .map(|page| (page.clone(), read_text(page)))
+        .collect();
+    for page in &wiki_pages {
+        if page == &ctx.index() || page == &ctx.log() || page.starts_with(ctx.archive()) {
+            continue;
+        }
+        if page
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.starts_with('_'))
+        {
+            continue;
+        }
+        let stem = page.file_stem().and_then(|value| value.to_str()).unwrap();
+        let rel = ctx.rel(page);
+        let link_no_ext = rel.strip_suffix(".md").unwrap_or(&rel);
+        let inbound = page_texts.iter().any(|(other, text)| {
+            other != page && (text.contains(link_no_ext) || text.contains(&format!("[[{stem}")))
+        });
+        if !inbound {
+            warnings.push(format!("orphan wiki page (no inbound links): {}", rel));
+        }
+    }
+
     json!({"errors": errors, "warnings": warnings})
 }
 
@@ -272,7 +320,7 @@ fn doctor_report(ctx: &Ctx) -> Value {
     for rule in missing_gitignore_rules(ctx) {
         issues.push(json!({"severity": "warning", "code": "missing_gitignore_rule", "rule": rule, "repairable": true}));
     }
-    let lint = lint_report(ctx);
+    let lint = lint_report(ctx, DEFAULT_STALE_DAYS);
     for item in lint["errors"].as_array().unwrap() {
         issues.push(json!({"severity": "error", "code": "lint_error", "message": item.as_str().unwrap(), "repairable": false}));
     }
@@ -367,7 +415,7 @@ fn log_skeleton() -> String {
 }
 
 fn agents_skeleton() -> String {
-    "# Agents Wiki LLM Wiki Contract\n\n- `raw/` contains immutable source files.\n- `wiki/` contains agent-maintained markdown.\n- Run `bin/agents-wiki doctor` before autonomous work.\n- Run `bin/agents-wiki lint` before finishing.\n".to_string()
+    "# Agents Wiki LLM Wiki Contract\n\n## Layers\n\n- `raw/` holds immutable source files; never edit them.\n- `wiki/` holds agent-maintained markdown (sources, entities, concepts, questions, reviews).\n- `wiki/index.md` is the catalog; `wiki/log.md` is the append-only timeline.\n\n## Operations\n\n- Ingest: `agents-wiki new-source` then `agents-wiki source-summary`. The CLI files the\n  page into `index.md` and appends to `log.md` automatically. You (the LLM) write the\n  synthesis: update related entity/concept pages, add cross-links, and flag contradictions\n  against existing claims.\n- Query: use `agents-wiki search` to find pages, read them, answer with citations to\n  `raw/` sources. File durable answers back as `agents-wiki page question \"...\"`.\n- Lint: run `agents-wiki lint` to surface missing index entries, missing citations,\n  duplicate ids, orphan pages, and stale active pages. Contradiction resolution is your\n  job, not the CLI's.\n\n## Workflow\n\n- Run `agents-wiki doctor` before autonomous work and `agents-wiki lint` before finishing.\n".to_string()
 }
 
 fn entrypoint_skeleton() -> String {
@@ -477,6 +525,54 @@ mod tests {
         assert!(!repaired_again
             .iter()
             .any(|item| item == "Created `wiki/index.md`."));
+
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn lint_flags_orphan_but_not_linked_pages() {
+        let vault = temp_vault("orphan-lint");
+        let ctx = Ctx::new(vault.clone());
+        repair_doctor(&ctx).unwrap();
+        fs::write(
+            ctx.wiki().join("concepts").join("hub.md"),
+            "---\ntitle: Hub\ntype: concept\n---\n\n# Hub\n\nSee [[linked]].\n",
+        )
+        .unwrap();
+        fs::write(
+            ctx.wiki().join("concepts").join("linked.md"),
+            "---\ntitle: Linked\ntype: concept\n---\n\n# Linked\n",
+        )
+        .unwrap();
+        fs::write(
+            ctx.wiki().join("concepts").join("orphan.md"),
+            "---\ntitle: Orphan\ntype: concept\n---\n\n# Orphan\n",
+        )
+        .unwrap();
+
+        let report = lint_report(&ctx, DEFAULT_STALE_DAYS);
+        let warnings: Vec<&str> = report["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item.as_str().unwrap())
+            .collect();
+        let orphans: Vec<&&str> = warnings
+            .iter()
+            .filter(|item| item.starts_with("orphan wiki page"))
+            .collect();
+        assert!(
+            orphans
+                .iter()
+                .any(|item| item.contains("concepts/orphan.md")),
+            "orphan page must be flagged: {warnings:#?}"
+        );
+        assert!(
+            !orphans
+                .iter()
+                .any(|item| item.contains("concepts/linked.md")),
+            "linked page must not be flagged: {warnings:#?}"
+        );
 
         fs::remove_dir_all(vault).unwrap();
     }
