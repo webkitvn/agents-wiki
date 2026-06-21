@@ -208,15 +208,16 @@ pub fn markdown_files(root: &Path) -> Vec<PathBuf> {
 }
 
 pub fn page_path(ctx: &Ctx, kind: &str, title: &str) -> Result<PathBuf, String> {
-    let folder = match kind {
-        "source" => ctx.wiki().join("sources"),
-        "entity" => ctx.wiki().join("entities"),
-        "concept" => ctx.wiki().join("concepts"),
-        "question" => ctx.wiki().join("questions"),
-        "review" => ctx.wiki().join("reviews"),
-        _ => return Err(format!("unsupported page kind: {kind}")),
-    };
-    Ok(folder.join(format!("{}.md", slugify(title))))
+    let folder = ctx
+        .taxonomy
+        .get(kind)
+        .ok_or_else(|| format!("unsupported page kind: {kind}"))?
+        .folder
+        .clone();
+    Ok(ctx
+        .wiki()
+        .join(folder)
+        .join(format!("{}.md", slugify(title))))
 }
 
 pub fn write_new(ctx: &Ctx, path: &Path, content: &str) -> Result<(), String> {
@@ -243,36 +244,6 @@ pub fn append_log(ctx: &Ctx, kind: &str, title: &str, lines: &[String]) -> Resul
     Ok(())
 }
 
-pub fn update_frontmatter_field(path: &Path, key: &str, value: &str) -> Result<(), String> {
-    if path.extension() != Some(OsStr::new("md")) || !path.exists() {
-        return Ok(());
-    }
-    let text = read_text(path);
-    let line = format!("{key}: {value}");
-    if let Some(frontmatter) = text.strip_prefix("---\n") {
-        if let Some(end_rel) = frontmatter.find("\n---") {
-            let end = 4 + end_rel;
-            let mut header: Vec<String> =
-                text[4..end].lines().map(|item| item.to_string()).collect();
-            let mut replaced = false;
-            for existing in &mut header {
-                if existing.starts_with(&format!("{key}:")) {
-                    *existing = line.clone();
-                    replaced = true;
-                    break;
-                }
-            }
-            if !replaced {
-                header.push(line);
-            }
-            let body = &text[end..];
-            return fs::write(path, format!("---\n{}{}", header.join("\n"), body))
-                .map_err(|err| err.to_string());
-        }
-    }
-    fs::write(path, format!("---\n{line}\n---\n\n{text}")).map_err(|err| err.to_string())
-}
-
 pub fn resolve_vault_path(ctx: &Ctx, value: &str) -> Result<PathBuf, String> {
     let path = expand_home(value);
     let path = if path.is_absolute() {
@@ -297,47 +268,6 @@ pub fn resolve_vault_path(ctx: &Ctx, value: &str) -> Result<PathBuf, String> {
         ));
     }
     Ok(path)
-}
-
-pub fn unique_destination(path: &Path) -> PathBuf {
-    if !path.exists() {
-        return path.to_path_buf();
-    }
-    let stem = path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("file");
-    let ext = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| format!(".{value}"))
-        .unwrap_or_default();
-    for index in 2.. {
-        let candidate = path.with_file_name(format!("{stem}-{index}{ext}"));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    unreachable!()
-}
-
-pub fn move_path(src: &Path, dest: &Path) -> Result<PathBuf, String> {
-    let dest = unique_destination(dest);
-    fs::create_dir_all(dest.parent().unwrap()).map_err(|err| err.to_string())?;
-    fs::rename(src, &dest)
-        .or_else(|_| {
-            if src.is_dir() {
-                Err(std::io::Error::other(
-                    "cross-device directory move unsupported",
-                ))
-            } else {
-                fs::copy(src, &dest)?;
-                fs::remove_file(src)?;
-                Ok(())
-            }
-        })
-        .map_err(|err| err.to_string())?;
-    Ok(dest)
 }
 
 pub fn source_records(ctx: &Ctx) -> Vec<Value> {

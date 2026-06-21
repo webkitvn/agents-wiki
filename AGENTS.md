@@ -4,7 +4,7 @@ This is a Rust CLI for local-first Obsidian wiki tooling. Keep changes focused o
 
 ## Core Principle
 
-`agents-wiki` is the operational layer for an LLM-maintained Obsidian knowledge base. Its job is to give AI agents small, deterministic primitives for wiki bookkeeping: ingesting raw sources, scaffolding wiki pages, maintaining `index.md` and `log.md`, checking structure, and handling archive / trash lifecycle safely.
+`agents-wiki` is the operational layer for an LLM-maintained Obsidian knowledge base. Its job is to give AI agents small, deterministic primitives for wiki bookkeeping: ingesting raw sources, scaffolding wiki pages, maintaining `index.md` and `log.md`, and checking structure. Versioning and deletion are delegated to git rather than a bespoke lifecycle.
 
 Do not turn this project into a generic Obsidian automation wrapper, a RAG engine, or a human-facing notes app. The LLM is responsible for synthesis, cross-linking, contradiction handling, and deciding what knowledge belongs in the wiki. This CLI is responsible for predictable file operations, vault safety, and conventions that keep agent work consistent across sessions.
 
@@ -34,7 +34,7 @@ Use the full check set for Rust code changes. For docs-only changes, no Rust ver
 - Prefer borrowing over cloning unless ownership is required.
 - Return `Result` for fallible behavior; do not add production `unwrap()` or `expect()`.
 - Keep CLI/file-system errors explicit and user-readable.
-- Add tests for behavior changes, especially path resolution, vault safety, lifecycle commands, and repair/lint behavior.
+- Add tests for behavior changes, especially path resolution, vault safety, taxonomy resolution, and repair/lint behavior.
 - Do not introduce new dependencies unless the task clearly needs them.
 
 ## 1. Think Before Coding

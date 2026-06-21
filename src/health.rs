@@ -10,8 +10,7 @@ use std::{
 
 use crate::{
     args::{has_flag, opt_value},
-    context::{Ctx, GITIGNORE_RULES},
-    lifecycle::trash_entries,
+    context::{Ctx, Taxonomy, GITIGNORE_RULES},
     util::{
         append_log, days_between, frontmatter, markdown_files, read_text, source_files,
         summary_exists, today,
@@ -156,7 +155,6 @@ pub fn lint_report(ctx: &Ctx, stale_days: i64) -> Value {
             .is_some_and(|value| value.starts_with('_'))
             || page == ctx.index()
             || page == ctx.log()
-            || page.starts_with(ctx.archive())
         {
             continue;
         }
@@ -263,7 +261,7 @@ pub fn lint_report(ctx: &Ctx, stale_days: i64) -> Value {
         .map(|page| (page.clone(), read_text(page)))
         .collect();
     for page in &wiki_pages {
-        if page == &ctx.index() || page == &ctx.log() || page.starts_with(ctx.archive()) {
+        if page == &ctx.index() || page == &ctx.log() {
             continue;
         }
         if page
@@ -281,6 +279,35 @@ pub fn lint_report(ctx: &Ctx, stale_days: i64) -> Value {
         });
         if !inbound {
             warnings.push(format!("orphan wiki page (no inbound links): {}", rel));
+        }
+    }
+
+    let taxonomy_folders: BTreeSet<&str> = ctx
+        .taxonomy
+        .kinds()
+        .iter()
+        .map(|kind| kind.folder.as_str())
+        .collect();
+    for page in &wiki_pages {
+        if page == &ctx.index() || page == &ctx.log() {
+            continue;
+        }
+        if page
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.starts_with('_'))
+        {
+            continue;
+        }
+        let rel = ctx.rel(page);
+        let under = rel.strip_prefix("wiki/").unwrap_or(&rel);
+        let top = under.split('/').next().unwrap_or("");
+        let in_taxonomy = under.contains('/') && taxonomy_folders.contains(top);
+        if !in_taxonomy {
+            warnings.push(format!(
+                "off-taxonomy wiki page (decide: move it into a taxonomy folder, or add the kind to AGENTS.md `taxonomy`): {}",
+                rel
+            ));
         }
     }
 
@@ -335,7 +362,6 @@ fn doctor_report(ctx: &Ctx) -> Value {
         "state": {
             "pending_sources": pending_source_items(ctx),
             "open_reviews": open_review_items(ctx),
-            "trash_entries": trash_entries(ctx).len(),
             "git_initialized": git_initialized,
             "git_dirty": git_dirty_status(ctx),
             "cli_executable": cli_executable,
@@ -352,21 +378,13 @@ fn repair_doctor(ctx: &Ctx) -> Result<Vec<String>, String> {
         }
     }
     for (path, content) in [
-        (ctx.index(), index_skeleton()),
-        (ctx.log(), log_skeleton()),
         (ctx.agents(), agents_skeleton()),
+        (ctx.index(), index_skeleton(ctx)),
+        (ctx.log(), log_skeleton()),
         (ctx.entrypoint(), entrypoint_skeleton()),
     ] {
         if write_if_missing(&path, content)? {
             repaired.push(format!("Created `{}`.", ctx.rel(&path)));
-        }
-    }
-
-    for dir in [ctx.archive(), ctx.trash()] {
-        let keep = dir.join(".gitkeep");
-        if dir.exists() && !keep.exists() {
-            fs::write(&keep, "").map_err(|err| err.to_string())?;
-            repaired.push(format!("Created `{}`.", ctx.rel(&keep)));
         }
     }
 
@@ -406,8 +424,15 @@ fn write_if_missing(path: &Path, content: String) -> Result<bool, String> {
     Ok(true)
 }
 
-fn index_skeleton() -> String {
-    format!("---\ntitle: Wiki Index\ncreated: {}\ntype: wiki-index\ntags: [llm-wiki, index]\n---\n\n# Wiki Index\n\n## Sources\n\n## Entities\n\n## Concepts\n\n## Questions\n\n## Reviews\n", crate::util::today())
+fn index_skeleton(ctx: &Ctx) -> String {
+    let mut text = format!(
+        "---\ntitle: Wiki Index\ncreated: {}\ntype: wiki-index\ntags: [llm-wiki, index]\n---\n\n# Wiki Index\n",
+        crate::util::today()
+    );
+    for kind in ctx.taxonomy.kinds() {
+        text.push_str(&format!("\n## {}\n", kind.section));
+    }
+    text
 }
 
 fn log_skeleton() -> String {
@@ -415,7 +440,68 @@ fn log_skeleton() -> String {
 }
 
 fn agents_skeleton() -> String {
-    "# Agents Wiki LLM Wiki Contract\n\n## Layers\n\n- `raw/` holds immutable source files; never edit them.\n- `wiki/` holds agent-maintained markdown (sources, entities, concepts, questions, reviews).\n- `wiki/index.md` is the catalog; `wiki/log.md` is the append-only timeline.\n\n## Operations\n\n- Ingest: `agents-wiki new-source` then `agents-wiki source-summary`. The CLI files the\n  page into `index.md` and appends to `log.md` automatically. You (the LLM) write the\n  synthesis: update related entity/concept pages, add cross-links, and flag contradictions\n  against existing claims.\n- Query: use `agents-wiki search` to find pages, read them, answer with citations to\n  `raw/` sources. File durable answers back as `agents-wiki page question \"...\"`.\n- Lint: run `agents-wiki lint` to surface missing index entries, missing citations,\n  duplicate ids, orphan pages, and stale active pages. Contradiction resolution is your\n  job, not the CLI's.\n\n## Workflow\n\n- Run `agents-wiki doctor` before autonomous work and `agents-wiki lint` before finishing.\n".to_string()
+    let mut taxonomy = String::new();
+    for kind in Taxonomy::default_taxonomy().kinds() {
+        taxonomy.push_str(&format!(
+            "  - kind: {}\n    folder: {}\n    section: {}\n",
+            kind.kind, kind.folder, kind.section
+        ));
+    }
+    format!(
+        r#"---
+title: Agents Wiki Contract
+type: wiki-schema
+tags: [llm-wiki, schema]
+# taxonomy maps each page `kind` to its `wiki/<folder>/` directory and its
+# `## <section>` heading in index.md. Edit this list to fit your domain, then run
+# `agents-wiki doctor --repair` to scaffold any new folders. No recompile needed.
+taxonomy:
+{taxonomy}---
+
+# Agents Wiki — LLM Wiki Contract
+
+This file is the schema. It tells you (the LLM) how this wiki is structured and how
+to maintain it. You own the wiki; co-evolve this file as the conventions change.
+
+## Layers
+
+- `raw/` — immutable source files. Read them; never edit them. This is the source of truth.
+- `wiki/` — agent-maintained markdown, organised by the `taxonomy` above.
+- `wiki/index.md` — the catalog (one section per taxonomy kind).
+- `wiki/log.md` — the append-only timeline of ingests, pages, and lint passes.
+
+## Page conventions
+
+- Every page starts with YAML frontmatter (`title`, `created`, `type`, `status`, `tags`)
+  and a single `# H1`.
+- `status: draft` until reviewed; `status: active` once it cites at least one `raw/` source.
+- Active pages must cite their evidence: link the `raw/` path or include its `source_id:`.
+- Cross-link liberally with `[[wikilinks]]`; an orphan page (no inbound links) is flagged by lint.
+
+## Choosing a kind
+
+- `entity` — a concrete thing: person, org, product, place.
+- `concept` — an idea, theme, or topic that spans sources.
+- `question` — an open question or a durable answer worth keeping.
+- `review` — a flag for a contradiction or claim that needs a human/agent decision.
+
+## Operations
+
+- Ingest: `agents-wiki new-source` then `agents-wiki source-summary`. The CLI files the
+  summary into `index.md` and `log.md`. Then YOU do the synthesis — a single source often
+  touches 10-15 pages: update related entity/concept pages, add cross-links, and open a
+  `review` when a new source contradicts an existing claim.
+- Query: `agents-wiki search` to find pages, read them, answer with citations to `raw/`
+  sources. File durable answers back with `agents-wiki page question "..."` so they compound.
+- Lint: `agents-wiki lint` surfaces missing index entries, missing citations, duplicate ids,
+  orphan pages, and stale pages. Resolving contradictions is your job, not the CLI's.
+
+## Workflow
+
+- Run `agents-wiki doctor` before autonomous work and `agents-wiki lint` before finishing.
+- Versioning, deletion, and history are handled by git — this CLI does not manage a trash.
+"#
+    )
 }
 
 fn entrypoint_skeleton() -> String {
@@ -525,6 +611,100 @@ mod tests {
         assert!(!repaired_again
             .iter()
             .any(|item| item == "Created `wiki/index.md`."));
+
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn scaffolded_agents_taxonomy_roundtrips_and_creates_folders() {
+        let vault = temp_vault("taxonomy-roundtrip");
+        let ctx = Ctx::new(vault.clone());
+
+        repair_doctor(&ctx).unwrap();
+
+        // The embedded AGENTS.md frontmatter must parse back to the default taxonomy.
+        assert_eq!(Taxonomy::load(&vault), Taxonomy::default_taxonomy());
+
+        // Every taxonomy folder must be scaffolded, and the index must hold each section.
+        let index = read_text(&ctx.index());
+        for kind in Taxonomy::default_taxonomy().kinds() {
+            assert!(
+                ctx.wiki().join(&kind.folder).is_dir(),
+                "missing folder for {}",
+                kind.kind
+            );
+            assert!(
+                index.contains(&format!("## {}", kind.section)),
+                "index missing section {}",
+                kind.section
+            );
+        }
+
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn custom_taxonomy_drives_repair_folders() {
+        let vault = temp_vault("taxonomy-custom");
+        fs::create_dir_all(&vault).unwrap();
+        fs::write(
+            vault.join("AGENTS.md"),
+            "---\ntaxonomy:\n  - kind: person\n    folder: people\n    section: People\n---\n\n# Schema\n",
+        )
+        .unwrap();
+        let ctx = Ctx::new(vault.clone());
+
+        repair_doctor(&ctx).unwrap();
+
+        assert!(ctx.wiki().join("people").is_dir());
+        assert!(!ctx.wiki().join("concepts").exists());
+        assert!(read_text(&ctx.index()).contains("## People"));
+
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn lint_flags_off_taxonomy_pages() {
+        let vault = temp_vault("off-taxonomy");
+        let ctx = Ctx::new(vault.clone());
+        repair_doctor(&ctx).unwrap();
+        // Page inside a known taxonomy folder: allowed.
+        fs::write(
+            ctx.wiki().join("concepts").join("ok.md"),
+            "---\ntitle: Ok\ntype: concept\n---\n\n# Ok\n",
+        )
+        .unwrap();
+        // Page in an unknown subfolder: flagged.
+        fs::create_dir_all(ctx.wiki().join("notes")).unwrap();
+        fs::write(
+            ctx.wiki().join("notes").join("stray.md"),
+            "---\ntitle: Stray\ntype: note\n---\n\n# Stray\n",
+        )
+        .unwrap();
+        // Page loose directly under wiki/: flagged.
+        fs::write(
+            ctx.wiki().join("loose.md"),
+            "---\ntitle: Loose\ntype: note\n---\n\n# Loose\n",
+        )
+        .unwrap();
+
+        let report = lint_report(&ctx, DEFAULT_STALE_DAYS);
+        let warnings: Vec<&str> = report["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item.as_str().unwrap())
+            .collect();
+        let off: Vec<&&str> = warnings
+            .iter()
+            .filter(|item| item.starts_with("off-taxonomy wiki page"))
+            .collect();
+        assert!(off.iter().any(|item| item.contains("notes/stray.md")));
+        assert!(off.iter().any(|item| item.contains("wiki/loose.md")));
+        assert!(
+            !off.iter().any(|item| item.contains("concepts/ok.md")),
+            "page in a taxonomy folder must not be flagged: {warnings:#?}"
+        );
 
         fs::remove_dir_all(vault).unwrap();
     }

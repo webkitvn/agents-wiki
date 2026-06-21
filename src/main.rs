@@ -2,7 +2,6 @@ mod args;
 mod context;
 mod health;
 mod knowledge;
-mod lifecycle;
 mod util;
 
 use context::Ctx;
@@ -50,10 +49,6 @@ fn run() -> Result<i32, String> {
         "page" => knowledge::page(&ctx, rest),
         "review" => knowledge::review(&ctx, rest),
         "reviews" => knowledge::reviews(&ctx, rest),
-        "archive" => lifecycle::archive(&ctx, rest),
-        "trash" => lifecycle::trash(&ctx, rest),
-        "trash-list" => lifecycle::trash_list(&ctx, rest),
-        "restore" => lifecycle::restore(&ctx, rest),
         "search" => knowledge::search(&ctx, rest),
         "lint" => health::lint(&ctx, rest),
         "doctor" => health::doctor(&ctx, rest),
@@ -68,7 +63,7 @@ fn print_help() {
     println!();
     println!("Commands:");
     println!("  guide status paths next new-source source-summary page review reviews");
-    println!("  archive trash trash-list restore search lint doctor log open");
+    println!("  search lint doctor log open");
 }
 
 fn first_command(args: &[String]) -> Option<&str> {

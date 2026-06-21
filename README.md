@@ -2,13 +2,15 @@
 
 Local-first Obsidian wiki tooling for AI agents.
 
-`agents-wiki` provides deterministic CLI primitives for agents to manage a markdown knowledge base: source ingest, source summaries, reviews, archive/trash lifecycle, doctor checks, linting, and Obsidian handoff.
+`agents-wiki` provides deterministic CLI primitives for agents to manage a markdown knowledge base: source ingest, source summaries, reviews, doctor checks, linting, and Obsidian handoff.
 
 ## Core Idea
 
 `agents-wiki` is the operational layer for an LLM-maintained Obsidian knowledge base. It is not a generic Obsidian automation wrapper, a RAG engine, or a human-facing notes app.
 
-The CLI handles predictable bookkeeping: ingesting immutable `raw/` sources, scaffolding pages in `wiki/`, maintaining `wiki/index.md` and `wiki/log.md`, checking structure, and moving files through archive / trash lifecycle safely. The LLM handles synthesis: reading sources, updating entity / concept / question pages, adding cross-links, resolving contradictions, and deciding what knowledge belongs in the wiki.
+The CLI handles predictable bookkeeping: ingesting immutable `raw/` sources, scaffolding pages in `wiki/`, maintaining `wiki/index.md` and `wiki/log.md`, and checking structure. The LLM handles synthesis: reading sources, updating entity / concept / question pages, adding cross-links, resolving contradictions, and deciding what knowledge belongs in the wiki. Versioning, deletion, and history are left to git.
+
+The page taxonomy (which `kind`s exist, their `wiki/` folders, and `index.md` sections) is configured in the `taxonomy:` frontmatter of the vault's `AGENTS.md`, so structure can be adapted per domain without recompiling. Edit it, then run `agents-wiki doctor --repair`.
 
 Obsidian remains the knowledge environment. Obsidian CLI can support agent workflows with vault-native context such as opening files, backlinks, unresolved links, tags, tasks, properties, search context, and plugin commands. Those capabilities should accelerate the agent, not replace the filesystem-first safety model that keeps `agents-wiki` deterministic.
 
@@ -102,14 +104,8 @@ Open a vault path in Obsidian:
 agents-wiki open "wiki/concepts/foo.md"
 ```
 
-Lifecycle commands:
-
-```bash
-agents-wiki archive "wiki/concepts/foo.md" --reason "No longer active"
-agents-wiki trash "raw/source.md" --reason "Accidental import"
-agents-wiki trash-list
-agents-wiki restore "trash/2026-06-20/raw/source.md"
-```
+Deleting and history are handled by git (the vault is a git repo), e.g.
+`git rm`, `git mv`, `git restore`.
 
 ## Development
 

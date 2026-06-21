@@ -54,6 +54,12 @@ agents-wiki review "Title" --reason "why" [--source "raw/x.md"] [--context "text
 agents-wiki reviews [--status open] [--json]   # list review items
 ```
 
+The valid `page` kinds, their target folders, and their `index.md` sections come
+from the `taxonomy:` frontmatter in the vault's `AGENTS.md` (defaults: entity,
+concept, question, review). Edit that list to fit your domain, then run
+`agents-wiki doctor --repair` to scaffold any new folders — no recompile needed.
+(`source` is part of the taxonomy but created via `source-summary`, not `page`.)
+
 ### Search & log
 
 ```bash
@@ -68,7 +74,8 @@ agents-wiki open "wiki/concepts/foo.md"  # open a vault path in Obsidian
 ```bash
 agents-wiki lint [--json] [--stale-days N]   # default stale window 90 days
 #   reports: missing index entries, missing citations, duplicate ids,
-#   orphan pages, stale active pages. Exit 1 if any ERROR.
+#   orphan pages, stale active pages, and off-taxonomy pages (pages not under a
+#   taxonomy folder — move them or extend AGENTS.md `taxonomy`). Exit 1 if any ERROR.
 
 agents-wiki doctor [--json] [--repair]
 #   checks vault structure / git / .gitignore / pending sources / reviews.
@@ -78,22 +85,14 @@ agents-wiki doctor [--json] [--repair]
 
 Run `agents-wiki doctor --repair` once to initialize a new vault.
 
-### Lifecycle (archive / trash / restore)
+### Deleting & history
 
-```bash
-agents-wiki archive "wiki/concepts/foo.md" --reason "obsolete"  # -> wiki/archive/<date>/
-agents-wiki trash "raw/source.md" --reason "accidental"          # -> trash/<date>/ (manifest)
-agents-wiki trash-list [--json]
-agents-wiki restore "trash/2026-06-20/raw/source.md" [--reason "..."]
-```
-
-`archive` only accepts `wiki/` paths; `trash` accepts any vault path. Core files
-(`index.md`, `log.md`, `AGENTS.md`, the entrypoint, the CLI binary) are protected.
+There is no archive/trash command. The vault is a git repo, so use git for
+versioning, deletion, and restore (`git rm`, `git mv`, `git restore`, history).
 
 ## Notes
 
 - All path arguments are relative to the vault root (or absolute inside it).
-- `--reason` is required for `archive` and `trash`.
 - Flags accept both `--flag value` and `--flag=value`.
 - Build from source: `cargo build --release` (binary at `target/release/agents-wiki`);
   install with `./scripts/install.sh`.

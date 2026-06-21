@@ -51,8 +51,6 @@ pub fn paths(ctx: &Ctx) -> Result<i32, String> {
     println!("raw={}", ctx.raw().display());
     println!("assets={}", ctx.assets().display());
     println!("wiki={}", ctx.wiki().display());
-    println!("archive={}", ctx.archive().display());
-    println!("trash={}", ctx.trash().display());
     println!("index={}", ctx.index().display());
     println!("log={}", ctx.log().display());
     Ok(0)
@@ -203,7 +201,12 @@ pub fn source_summary(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
         ctx.rel(&raw)
     );
     write_new(ctx, &path, &content)?;
-    add_index_entry(ctx, "Sources", &ctx.rel(&path), &title)?;
+    let section = ctx
+        .taxonomy
+        .get("source")
+        .map(|kind| kind.section.as_str())
+        .unwrap_or("Sources");
+    add_index_entry(ctx, section, &ctx.rel(&path), &title)?;
     append_log(
         ctx,
         "ingest",
@@ -218,26 +221,30 @@ pub fn source_summary(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
 }
 
 pub fn page(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
-    let pos = required_pos(args, 2, "page entity|concept|question|review <title>")?;
+    let pos = required_pos(args, 2, "page <kind> <title>")?;
     let kind = &pos[0];
     let title = &pos[1];
-    if !["entity", "concept", "question", "review"].contains(&kind.as_str()) {
-        return Err("kind must be entity, concept, question, or review".to_string());
-    }
+    // `source` pages are created via `source-summary` (they carry source ids), so
+    // they are not creatable here even though they exist in the taxonomy.
+    let Some(page_kind) = ctx.taxonomy.get(kind).filter(|item| item.kind != "source") else {
+        let allowed = ctx
+            .taxonomy
+            .kinds()
+            .iter()
+            .filter(|item| item.kind != "source")
+            .map(|item| item.kind.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!("kind must be one of: {allowed}"));
+    };
+    let section = page_kind.section.clone();
     let path = page_path(ctx, kind, title)?;
     let content = format!(
         "---\ntitle: {title}\ncreated: {}\ntype: {kind}\nstatus: draft\nsource_count: 0\ntags: [llm-wiki]\n---\n\n# {title}\n\n## Summary\n\n## Evidence\n\n## Links\n",
         today()
     );
     write_new(ctx, &path, &content)?;
-    let section = match kind.as_str() {
-        "entity" => "Entities",
-        "concept" => "Concepts",
-        "question" => "Questions",
-        "review" => "Reviews",
-        _ => unreachable!("kind validated above"),
-    };
-    add_index_entry(ctx, section, &ctx.rel(&path), title)?;
+    add_index_entry(ctx, &section, &ctx.rel(&path), title)?;
     append_log(
         ctx,
         kind,
