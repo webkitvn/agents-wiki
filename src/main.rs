@@ -7,6 +7,8 @@ mod util;
 
 use context::Ctx;
 
+const GUIDE: &str = include_str!("../skills/agents-wiki/GUIDE.md");
+
 fn main() {
     let code = match run() {
         Ok(code) => code,
@@ -20,6 +22,12 @@ fn main() {
 
 fn run() -> Result<i32, String> {
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
+
+    if first_command(&argv) == Some("guide") {
+        print!("{GUIDE}");
+        return Ok(0);
+    }
+
     let vault = args::parse_global_vault(&mut argv)?;
     let ctx = Ctx::new(vault);
 
@@ -59,6 +67,46 @@ fn print_help() {
     println!("agents-wiki [--vault PATH] <command> [options]");
     println!();
     println!("Commands:");
-    println!("  status paths next new-source source-summary page review reviews");
+    println!("  guide status paths next new-source source-summary page review reviews");
     println!("  archive trash trash-list restore search lint doctor log open");
+}
+
+fn first_command(args: &[String]) -> Option<&str> {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if arg == "--vault" {
+            index += 2;
+        } else if arg.starts_with("--vault=") {
+            index += 1;
+        } else {
+            return Some(arg);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_command;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn finds_command_after_vault_flag() {
+        assert_eq!(
+            first_command(&args(&["--vault", "/tmp/vault", "guide"])),
+            Some("guide")
+        );
+    }
+
+    #[test]
+    fn finds_command_after_vault_equals_flag() {
+        assert_eq!(
+            first_command(&args(&["--vault=/tmp/vault", "guide"])),
+            Some("guide")
+        );
+    }
 }

@@ -2,13 +2,21 @@
 
 This is a Rust CLI for local-first Obsidian wiki tooling. Keep changes focused on deterministic file operations, clear CLI behavior, and safe vault path handling.
 
+## Core Principle
+
+`agents-wiki` is the operational layer for an LLM-maintained Obsidian knowledge base. Its job is to give AI agents small, deterministic primitives for wiki bookkeeping: ingesting raw sources, scaffolding wiki pages, maintaining `index.md` and `log.md`, checking structure, and handling archive / trash lifecycle safely.
+
+Do not turn this project into a generic Obsidian automation wrapper, a RAG engine, or a human-facing notes app. The LLM is responsible for synthesis, cross-linking, contradiction handling, and deciding what knowledge belongs in the wiki. This CLI is responsible for predictable file operations, vault safety, and conventions that keep agent work consistent across sessions.
+
+Obsidian and Obsidian CLI may support the workflow by providing vault-native context such as opening files, backlinks, unresolved links, tags, tasks, properties, search context, or plugin commands. Treat those capabilities as agent accelerators, not as replacements for the core filesystem-first safety model unless a requested behavior specifically requires Obsidian runtime semantics.
+
 ## Design Source
 
 The design follows the LLM-wiki pattern documented in [docs/llm-wiki.md](docs/llm-wiki.md): immutable `raw/` sources, an LLM-maintained `wiki/`, a schema file (this `AGENTS.md`), plus the ingest / query / lint operations and the `index.md` + `log.md` conventions. Use it as the reference when deciding behavior; the CLI provides deterministic primitives while synthesis stays the LLM's job.
 
 ## Keep the Skill in Sync
 
-[skills/agents-wiki/SKILL.md](skills/agents-wiki/SKILL.md) is the user-facing CLI usage guide. Whenever a change affects the CLI's command surface or behavior (commands, flags, arguments, output format, or vault resolution), update `SKILL.md` in the same change so it stays accurate. Update its `description` trigger phrases too if the intended use cases change.
+[skills/agents-wiki/GUIDE.md](skills/agents-wiki/GUIDE.md) is the user-facing CLI usage guide embedded into the binary and printed by `agents-wiki guide`. Whenever a change affects the CLI's command surface or behavior (commands, flags, arguments, output format, or vault resolution), update `GUIDE.md` in the same change so the rebuilt binary stays accurate. Update [skills/agents-wiki/SKILL.md](skills/agents-wiki/SKILL.md) only when the skill bootstrap text or `description` trigger phrases change.
 
 ## Development Commands
 

@@ -4,6 +4,14 @@ Local-first Obsidian wiki tooling for AI agents.
 
 `agents-wiki` provides deterministic CLI primitives for agents to manage a markdown knowledge base: source ingest, source summaries, reviews, archive/trash lifecycle, doctor checks, linting, and Obsidian handoff.
 
+## Core Idea
+
+`agents-wiki` is the operational layer for an LLM-maintained Obsidian knowledge base. It is not a generic Obsidian automation wrapper, a RAG engine, or a human-facing notes app.
+
+The CLI handles predictable bookkeeping: ingesting immutable `raw/` sources, scaffolding pages in `wiki/`, maintaining `wiki/index.md` and `wiki/log.md`, checking structure, and moving files through archive / trash lifecycle safely. The LLM handles synthesis: reading sources, updating entity / concept / question pages, adding cross-links, resolving contradictions, and deciding what knowledge belongs in the wiki.
+
+Obsidian remains the knowledge environment. Obsidian CLI can support agent workflows with vault-native context such as opening files, backlinks, unresolved links, tags, tasks, properties, search context, and plugin commands. Those capabilities should accelerate the agent, not replace the filesystem-first safety model that keeps `agents-wiki` deterministic.
+
 ## Install
 
 ```bash
@@ -53,6 +61,12 @@ Vault resolution precedence:
 4. `~/Documents/Agents Wiki`
 
 ## Usage
+
+For the full version-matched command reference:
+
+```bash
+agents-wiki guide
+```
 
 ```bash
 agents-wiki doctor
