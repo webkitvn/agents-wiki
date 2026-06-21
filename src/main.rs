@@ -2,6 +2,7 @@ mod args;
 mod context;
 mod health;
 mod knowledge;
+mod setup;
 mod util;
 
 use context::Ctx;
@@ -41,6 +42,7 @@ fn run() -> Result<i32, String> {
             print_help();
             Ok(0)
         }
+        "init" => setup::init(rest),
         "status" => knowledge::status(&ctx),
         "paths" => knowledge::paths(&ctx),
         "next" => knowledge::next(&ctx, rest),
@@ -52,6 +54,7 @@ fn run() -> Result<i32, String> {
         "search" => knowledge::search(&ctx, rest),
         "lint" => health::lint(&ctx, rest),
         "doctor" => health::doctor(&ctx, rest),
+        "reset" => health::reset(&ctx, rest),
         "log" => knowledge::log(&ctx, rest),
         "open" => knowledge::open(&ctx, rest),
         _ => Err(format!("unknown command: {command}")),
@@ -62,8 +65,9 @@ fn print_help() {
     println!("agents-wiki [--vault PATH] <command> [options]");
     println!();
     println!("Commands:");
-    println!("  guide status paths next new-source source-summary page review reviews");
+    println!("  guide init status paths next new-source source-summary page review reviews");
     println!("  search lint doctor log open");
+    println!("  reset  WARNING: deletes all contents of the resolved vault after confirmation");
 }
 
 fn first_command(args: &[String]) -> Option<&str> {

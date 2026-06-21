@@ -21,6 +21,14 @@ Many read commands accept `--json` for machine-readable output.
 agents-wiki guide          # print this embedded guide
 ```
 
+### Initialize
+
+```bash
+agents-wiki init "/path/to/Agents Wiki" [--force]
+#   writes ~/.agents-wiki/config.yml and scaffolds the vault with doctor --repair.
+#   existing config is kept unless --force is provided.
+```
+
 ### Inspect
 
 ```bash
@@ -80,19 +88,22 @@ agents-wiki lint [--json] [--stale-days N]   # default stale window 90 days
 agents-wiki doctor [--json] [--repair]
 #   checks vault structure / git / .gitignore / pending sources / reviews.
 #   --repair scaffolds missing dirs and core files (index.md, log.md,
-#   AGENTS.md, "LLM Wiki.md"), inits git, and fixes .gitignore.
+#   AGENTS.md, "LLM Wiki.md"), inits git when available, and fixes .gitignore.
 ```
 
-Run `agents-wiki doctor --repair` once to initialize a new vault.
+Run `agents-wiki init "/path/to/Agents Wiki"` once to configure and initialize a new vault.
 
 ### Deleting & history
 
 There is no archive/trash command. The vault is a git repo, so use git for
 versioning, deletion, and restore (`git rm`, `git mv`, `git restore`, history).
+If git is not installed, filesystem operations still work, but `doctor` reports
+`git_unavailable` and the vault has no versioning, deletion, or restore safety
+until git is installed and initialized.
 
 ## Notes
 
 - All path arguments are relative to the vault root (or absolute inside it).
 - Flags accept both `--flag value` and `--flag=value`.
 - Build from source: `cargo build --release` (binary at `target/release/agents-wiki`);
-  install with `./scripts/install.sh`.
+  install with `./scripts/install.sh`, then run `agents-wiki init "/path/to/Agents Wiki"`.

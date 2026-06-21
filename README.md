@@ -26,20 +26,29 @@ Or install directly from GitHub:
 curl -fsSL https://raw.githubusercontent.com/webkitvn/agents-wiki/main/scripts/install.sh | bash
 ```
 
-Common options:
+Common install option:
 
 ```bash
-./scripts/install.sh --vault "$HOME/Documents/Agents Wiki"
 ./scripts/install.sh --bin-dir "$HOME/.local/bin"
-./scripts/install.sh --force-config
 ```
 
 The installer:
 
 - builds the Rust release binary
 - copies it to `~/.local/bin/agents-wiki` by default
-- creates `~/.agents-wiki/config.yml` if missing
-- creates/scaffolds the configured vault with `agents-wiki doctor --repair`
+
+Then configure and scaffold your vault location:
+
+```bash
+agents-wiki init "$HOME/Documents/Agents Wiki"
+```
+
+Use `--force` only when you intentionally want to overwrite an existing
+`~/.agents-wiki/config.yml` vault path:
+
+```bash
+agents-wiki init "$HOME/Documents/Agents Wiki" --force
+```
 
 ## Configuration
 
@@ -71,6 +80,7 @@ agents-wiki guide
 ```
 
 ```bash
+agents-wiki init "$HOME/Documents/Agents Wiki"
 agents-wiki doctor
 agents-wiki doctor --repair
 agents-wiki status
@@ -105,7 +115,9 @@ agents-wiki open "wiki/concepts/foo.md"
 ```
 
 Deleting and history are handled by git (the vault is a git repo), e.g.
-`git rm`, `git mv`, `git restore`.
+`git rm`, `git mv`, `git restore`. If git is not installed, filesystem
+operations still work, but the vault has no versioning, deletion, or restore
+safety until git is installed and initialized.
 
 ## Development
 

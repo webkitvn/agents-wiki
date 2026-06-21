@@ -3,6 +3,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
     fs,
+    io::{self, Write},
     os::unix::fs::PermissionsExt,
     path::Path,
     process::Command,
@@ -18,6 +19,7 @@ use crate::{
 };
 
 const DEFAULT_STALE_DAYS: i64 = 90;
+const GIT_COMMAND: &str = "git";
 
 pub fn lint(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
     let stale_days = opt_value(args, "--stale-days")
@@ -128,6 +130,45 @@ pub fn doctor(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
             0
         },
     )
+}
+
+pub fn reset(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
+    if args.iter().any(|arg| arg == "-h" || arg == "--help") {
+        println!("agents-wiki reset");
+        println!("WARNING: deletes all contents of the resolved vault after N/y confirmation.");
+        return Ok(0);
+    }
+    if !args.is_empty() {
+        return Err("usage: reset".to_string());
+    }
+    if !ctx.vault.exists() {
+        println!("Vault does not exist: {}", ctx.vault.display());
+        return Ok(0);
+    }
+    validate_reset_target(ctx)?;
+    if is_dir_empty(&ctx.vault)? {
+        println!("Vault is already empty: {}", ctx.vault.display());
+        return Ok(0);
+    }
+    print!(
+        "WARNING: delete all contents of {}? [N/y] ",
+        ctx.vault.display()
+    );
+    io::stdout().flush().map_err(|err| err.to_string())?;
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .map_err(|err| err.to_string())?;
+    if !answer_confirms_reset(&answer) {
+        println!("Aborted.");
+        return Ok(1);
+    }
+    let deleted = reset_vault_contents(ctx)?;
+    println!(
+        "Deleted {deleted} item(s) from {}. Run `agents-wiki init <vault-path>` to scaffold a fresh vault.",
+        ctx.vault.display()
+    );
+    Ok(0)
 }
 
 pub fn lint_report(ctx: &Ctx, stale_days: i64) -> Value {
@@ -340,8 +381,11 @@ fn doctor_report(ctx: &Ctx) -> Value {
     if !cli_executable {
         issues.push(json!({"severity": "error", "code": "cli_not_executable", "path": exe.display().to_string(), "repairable": true}));
     }
-    let git_initialized = git_repo_exists(ctx);
-    if !git_initialized {
+    let git_available = git_available();
+    let git_initialized = git_available && git_repo_exists(ctx);
+    if !git_available {
+        issues.push(json!({"severity": "warning", "code": "git_unavailable", "path": ".", "repairable": false}));
+    } else if !git_initialized {
         issues.push(json!({"severity": "warning", "code": "git_not_initialized", "path": ".", "repairable": true}));
     }
     for rule in missing_gitignore_rules(ctx) {
@@ -362,6 +406,7 @@ fn doctor_report(ctx: &Ctx) -> Value {
         "state": {
             "pending_sources": pending_source_items(ctx),
             "open_reviews": open_review_items(ctx),
+            "git_available": git_available,
             "git_initialized": git_initialized,
             "git_dirty": git_dirty_status(ctx),
             "cli_executable": cli_executable,
@@ -369,7 +414,7 @@ fn doctor_report(ctx: &Ctx) -> Value {
     })
 }
 
-fn repair_doctor(ctx: &Ctx) -> Result<Vec<String>, String> {
+pub fn repair_doctor(ctx: &Ctx) -> Result<Vec<String>, String> {
     let mut repaired = Vec::new();
     for dir in ctx.required_dirs() {
         if !dir.exists() {
@@ -399,20 +444,85 @@ fn repair_doctor(ctx: &Ctx) -> Result<Vec<String>, String> {
         fs::write(ctx.gitignore(), existing).map_err(|err| err.to_string())?;
         repaired.push(format!("Updated `{}`.", ctx.rel(&ctx.gitignore())));
     }
-    if !git_repo_exists(ctx)
-        && Command::new("git")
-            .arg("init")
-            .current_dir(&ctx.vault)
-            .status()
-            .map_err(|err| err.to_string())?
-            .success()
-    {
-        repaired.push("Initialized git repository.".to_string());
+    let repaired_before_git = !repaired.is_empty();
+    if let Some(item) = repair_git(ctx, GIT_COMMAND, repaired_before_git)? {
+        repaired.push(item);
     }
     if !repaired.is_empty() {
         append_log(ctx, "doctor", "repair", &repaired)?;
     }
     Ok(repaired)
+}
+
+fn validate_reset_target(ctx: &Ctx) -> Result<(), String> {
+    if !ctx.vault.is_dir() {
+        return Err(format!("vault is not a directory: {}", ctx.vault.display()));
+    }
+    let canonical = fs::canonicalize(&ctx.vault).map_err(|err| err.to_string())?;
+    if reset_path_is_protected(&canonical) {
+        return Err(format!(
+            "refusing to reset protected path: {}",
+            canonical.display()
+        ));
+    }
+    if !looks_like_agents_wiki_vault(ctx) && !is_dir_empty(&ctx.vault)? {
+        return Err(format!(
+            "refusing to reset non-agents-wiki directory: {}",
+            ctx.vault.display()
+        ));
+    }
+    Ok(())
+}
+
+fn reset_path_is_protected(path: &Path) -> bool {
+    if path.parent().is_none() || path.components().count() < 3 {
+        return true;
+    }
+    std::env::var("HOME").is_ok_and(|home| path == Path::new(&home))
+}
+
+fn looks_like_agents_wiki_vault(ctx: &Ctx) -> bool {
+    frontmatter(&ctx.agents())
+        .get("type")
+        .is_some_and(|value| value == "wiki-schema")
+        || frontmatter(&ctx.entrypoint())
+            .get("type")
+            .is_some_and(|value| value == "vault-entrypoint")
+        || (frontmatter(&ctx.index())
+            .get("type")
+            .is_some_and(|value| value == "wiki-index")
+            && frontmatter(&ctx.log())
+                .get("type")
+                .is_some_and(|value| value == "wiki-log"))
+}
+
+fn is_dir_empty(path: &Path) -> Result<bool, String> {
+    Ok(fs::read_dir(path)
+        .map_err(|err| err.to_string())?
+        .next()
+        .is_none())
+}
+
+fn answer_confirms_reset(answer: &str) -> bool {
+    matches!(answer.trim(), "y" | "Y")
+}
+
+fn reset_vault_contents(ctx: &Ctx) -> Result<usize, String> {
+    let mut deleted = 0;
+    for entry in fs::read_dir(&ctx.vault).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let path = entry.path();
+        let file_type = fs::symlink_metadata(&path)
+            .map_err(|err| format!("{}: {err}", path.display()))?
+            .file_type();
+        if file_type.is_dir() {
+            fs::remove_dir_all(&path).map_err(|err| format!("{}: {err}", path.display()))?;
+        } else {
+            fs::remove_file(&path).map_err(|err| format!("{}: {err}", path.display()))?;
+        }
+        deleted += 1;
+    }
+    Ok(deleted)
 }
 
 fn write_if_missing(path: &Path, content: String) -> Result<bool, String> {
@@ -509,16 +619,32 @@ fn entrypoint_skeleton() -> String {
 }
 
 fn git_repo_exists(ctx: &Ctx) -> bool {
-    git_output(ctx, &["rev-parse", "--is-inside-work-tree"]).is_some_and(|output| {
+    git_repo_exists_with_command(ctx, GIT_COMMAND)
+}
+
+fn git_repo_exists_with_command(ctx: &Ctx, command: &str) -> bool {
+    git_output(ctx, command, &["rev-parse", "--is-inside-work-tree"]).is_some_and(|output| {
         output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true"
     })
 }
 
+fn git_available() -> bool {
+    command_available(GIT_COMMAND)
+}
+
+fn command_available(command: &str) -> bool {
+    Command::new(command).arg("--version").output().is_ok()
+}
+
 fn git_dirty_status(ctx: &Ctx) -> Option<Vec<String>> {
-    if !git_repo_exists(ctx) {
+    git_dirty_status_with_command(ctx, GIT_COMMAND)
+}
+
+fn git_dirty_status_with_command(ctx: &Ctx, command: &str) -> Option<Vec<String>> {
+    if !git_repo_exists_with_command(ctx, command) {
         return None;
     }
-    git_output(ctx, &["status", "--short"]).map(|output| {
+    git_output(ctx, command, &["status", "--short"]).map(|output| {
         String::from_utf8_lossy(&output.stdout)
             .lines()
             .map(|line| line.to_string())
@@ -526,8 +652,33 @@ fn git_dirty_status(ctx: &Ctx) -> Option<Vec<String>> {
     })
 }
 
-fn git_output(ctx: &Ctx, args: &[&str]) -> Option<std::process::Output> {
-    Command::new("git")
+fn repair_git(ctx: &Ctx, command: &str, report_missing: bool) -> Result<Option<String>, String> {
+    if git_repo_exists_with_command(ctx, command) {
+        return Ok(None);
+    }
+    if !command_available(command) {
+        if !report_missing {
+            return Ok(None);
+        }
+        return Ok(Some(
+            "Skipped git init because git is not installed; install git to enable versioning, deletion, and restore."
+                .to_string(),
+        ));
+    }
+    if Command::new(command)
+        .arg("init")
+        .current_dir(&ctx.vault)
+        .status()
+        .map_err(|err| err.to_string())?
+        .success()
+    {
+        return Ok(Some("Initialized git repository.".to_string()));
+    }
+    Ok(None)
+}
+
+fn git_output(ctx: &Ctx, command: &str, args: &[&str]) -> Option<std::process::Output> {
+    Command::new(command)
         .args(args)
         .current_dir(&ctx.vault)
         .output()
@@ -611,6 +762,32 @@ mod tests {
         assert!(!repaired_again
             .iter()
             .any(|item| item == "Created `wiki/index.md`."));
+
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn missing_git_skips_init_without_failing_repair() {
+        let vault = temp_vault("missing-git-repair");
+        fs::create_dir_all(&vault).unwrap();
+        let ctx = Ctx::new(vault.clone());
+
+        let repair = repair_git(&ctx, "agents-wiki-missing-git-command", true).unwrap();
+
+        assert_eq!(
+            repair.as_deref(),
+            Some(
+                "Skipped git init because git is not installed; install git to enable versioning, deletion, and restore."
+            )
+        );
+        assert_eq!(
+            git_dirty_status_with_command(&ctx, "agents-wiki-missing-git-command"),
+            None
+        );
+        assert_eq!(
+            repair_git(&ctx, "agents-wiki-missing-git-command", false).unwrap(),
+            None
+        );
 
         fs::remove_dir_all(vault).unwrap();
     }
@@ -754,6 +931,60 @@ mod tests {
             "linked page must not be flagged: {warnings:#?}"
         );
 
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn reset_confirmation_only_accepts_y() {
+        assert!(answer_confirms_reset("y\n"));
+        assert!(answer_confirms_reset("Y"));
+        assert!(!answer_confirms_reset(""));
+        assert!(!answer_confirms_reset("yes"));
+        assert!(!answer_confirms_reset("n"));
+    }
+
+    #[test]
+    fn reset_refuses_non_agents_wiki_directory_with_contents() {
+        let vault = temp_vault("reset-refuse");
+        fs::create_dir_all(&vault).unwrap();
+        fs::write(vault.join("notes.md"), "# Not a vault\n").unwrap();
+        let ctx = Ctx::new(vault.clone());
+
+        let err = validate_reset_target(&ctx).unwrap_err();
+
+        assert!(err.contains("non-agents-wiki"));
+        assert!(vault.join("notes.md").exists());
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn reset_refuses_directory_with_unrelated_agents_file() {
+        let vault = temp_vault("reset-agents-file");
+        fs::create_dir_all(&vault).unwrap();
+        fs::write(vault.join("AGENTS.md"), "# Repo instructions\n").unwrap();
+        let ctx = Ctx::new(vault.clone());
+
+        let err = validate_reset_target(&ctx).unwrap_err();
+
+        assert!(err.contains("non-agents-wiki"));
+        assert!(vault.join("AGENTS.md").exists());
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn reset_deletes_all_vault_children_but_keeps_root() {
+        let vault = temp_vault("reset-delete");
+        let ctx = Ctx::new(vault.clone());
+        repair_doctor(&ctx).unwrap();
+        fs::create_dir_all(vault.join(".obsidian")).unwrap();
+        fs::write(vault.join(".obsidian").join("workspace.json"), "{}").unwrap();
+
+        validate_reset_target(&ctx).unwrap();
+        let deleted = reset_vault_contents(&ctx).unwrap();
+
+        assert!(deleted > 0);
+        assert!(vault.is_dir());
+        assert!(is_dir_empty(&vault).unwrap());
         fs::remove_dir_all(vault).unwrap();
     }
 }
