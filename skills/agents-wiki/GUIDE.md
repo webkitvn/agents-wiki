@@ -9,7 +9,7 @@ Command reference for the `agents-wiki` binary. Invoke as `agents-wiki <command>
 1. `--vault PATH`
 2. `AGENTS_WIKI_VAULT` env var
 3. `~/.agents-wiki/config.yml` (`vault_path: "..."`)
-4. `~/Documents/Agents Wiki`
+4. `~/Documents/agents-wiki`
 
 Many read commands accept `--json` for machine-readable output.
 
@@ -24,7 +24,7 @@ agents-wiki guide          # print this embedded guide
 ### Initialize
 
 ```bash
-agents-wiki init "/path/to/Agents Wiki" [--force]
+agents-wiki init "/path/to/agents-wiki" [--force]
 #   writes ~/.agents-wiki/config.yml and scaffolds the vault with doctor --repair.
 #   existing config is kept unless --force is provided.
 ```
@@ -93,7 +93,7 @@ agents-wiki doctor [--json] [--repair]
 #   existing index.md, inits git when available, and fixes .gitignore.
 ```
 
-Run `agents-wiki init "/path/to/Agents Wiki"` once to configure and initialize a new vault.
+Run `agents-wiki init "/path/to/agents-wiki"` once to configure and initialize a new vault.
 
 ### Deleting & history
 
@@ -113,4 +113,4 @@ until git is installed and initialized.
 - `new-source --file` correctly deduplicates binary files (PDFs, images) by
   hashing their raw bytes rather than treating all unreadable files as identical.
 - Build from source: `cargo build --release` (binary at `target/release/agents-wiki`);
-  install with `./scripts/install.sh`, then run `agents-wiki init "/path/to/Agents Wiki"`.
+  install with `./scripts/install.sh`, then run `agents-wiki init "/path/to/agents-wiki"`.

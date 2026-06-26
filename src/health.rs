@@ -14,7 +14,7 @@ use crate::{
     context::{Ctx, Taxonomy, GITIGNORE_RULES},
     util::{
         append_log, days_between, frontmatter, fs_err, markdown_files, read_text, source_files,
-        summary_exists, today,
+        today,
     },
 };
 
@@ -328,6 +328,7 @@ pub fn lint_report(ctx: &Ctx, stale_days: i64) -> LintReport {
         }
     }
 
+    let summaries_index = crate::util::SummaryIndex::build(ctx);
     for raw in source_files(ctx) {
         if raw.extension() == Some(OsStr::new("md")) {
             let fields = frontmatter(&raw);
@@ -344,7 +345,7 @@ pub fn lint_report(ctx: &Ctx, stale_days: i64) -> LintReport {
                 ));
             }
         }
-        if !summary_exists(ctx, &raw) {
+        if !summaries_index.contains_source(ctx, &raw) {
             warnings.push(format!(
                 "raw source may lack wiki summary: {}",
                 ctx.rel(&raw)
@@ -868,9 +869,10 @@ fn open_review_items(ctx: &Ctx) -> Vec<String> {
 }
 
 fn pending_source_items(ctx: &Ctx) -> Vec<String> {
+    let summaries_index = crate::util::SummaryIndex::build(ctx);
     source_files(ctx)
         .into_iter()
-        .filter(|path| !summary_exists(ctx, path))
+        .filter(|path| !summaries_index.contains_source(ctx, path))
         .map(|path| ctx.rel(&path))
         .collect()
 }

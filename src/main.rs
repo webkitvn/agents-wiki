@@ -1,11 +1,4 @@
-mod args;
-mod context;
-mod health;
-mod knowledge;
-mod setup;
-mod util;
-
-use context::Ctx;
+use agents_wiki::{args, context::Ctx, health, knowledge, setup};
 
 const GUIDE: &str = include_str!("../skills/agents-wiki/GUIDE.md");
 

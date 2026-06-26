@@ -1,11 +1,11 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     env,
     ffi::OsStr,
     fs,
-    io::Write,
+    io::{BufRead, Write},
     path::{Path, PathBuf},
 };
 use url::Url;
@@ -188,16 +188,38 @@ pub fn frontmatter(path: &Path) -> BTreeMap<String, String> {
     if path.extension() != Some(OsStr::new("md")) || !path.exists() {
         return BTreeMap::new();
     }
-    let text = read_text(path);
-    if !text.starts_with("---\n") {
-        return BTreeMap::new();
-    }
-    let Some(end) = text[4..].find("\n---") else {
+    let Ok(file) = fs::File::open(path) else {
         return BTreeMap::new();
     };
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = String::new();
+
+    if reader
+        .read_line(&mut line)
+        .ok()
+        .filter(|_| {
+            let trimmed = line.trim_end();
+            trimmed == "---"
+        })
+        .is_none()
+    {
+        return BTreeMap::new();
+    }
+
     let mut fields = BTreeMap::new();
-    for line in text[4..4 + end].lines() {
-        if let Some((key, value)) = line.split_once(':') {
+    loop {
+        line.clear();
+        let Ok(n) = reader.read_line(&mut line) else {
+            break;
+        };
+        if n == 0 {
+            break;
+        }
+        let trimmed = line.trim_end();
+        if trimmed == "---" {
+            break;
+        }
+        if let Some((key, value)) = trimmed.split_once(':') {
             fields.insert(key.trim().to_string(), value.trim().to_string());
         }
     }
@@ -446,9 +468,11 @@ pub fn add_index_entry(
         }
         text.push_str(&format!("\n{heading}\n\n{entry}\n"));
     }
-    fs::create_dir_all(index.parent().unwrap())
-        .map_err(|err| fs_err(index.parent().unwrap(), "create directory", err))?;
-    fs::write(&index, text).map_err(|err| fs_err(&index, "write", err))
+    let parent = index.parent().unwrap();
+    fs::create_dir_all(parent).map_err(|err| fs_err(parent, "create directory", err))?;
+    let tmp = index.with_extension("tmp");
+    fs::write(&tmp, text).map_err(|err| fs_err(&tmp, "write index tmp", err))?;
+    fs::rename(&tmp, &index).map_err(|err| fs_err(&index, "rename index", err))
 }
 
 /// Whole days from `start` to `end` for `YYYY-MM-DD` dates (negative if end precedes start).
@@ -476,20 +500,76 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146097 + doe - 719468
 }
 
-pub fn summary_exists(ctx: &Ctx, raw_path: &Path) -> bool {
-    // Use the taxonomy to find the source folder rather than hardcoding "sources".
-    let source_folder = ctx.taxonomy.folder_for("source");
-    let summaries = ctx.wiki().join(source_folder);
-    if !summaries.exists() {
-        return false;
+pub struct SummaryIndex {
+    by_source_path: HashSet<String>,
+    by_source_id: HashSet<String>,
+    by_canonical_id: HashSet<String>,
+    fallback_pages: Vec<PathBuf>,
+}
+
+impl SummaryIndex {
+    pub fn build(ctx: &Ctx) -> Self {
+        let mut index = Self {
+            by_source_path: HashSet::new(),
+            by_source_id: HashSet::new(),
+            by_canonical_id: HashSet::new(),
+            fallback_pages: Vec::new(),
+        };
+
+        let source_folder = ctx.taxonomy.folder_for("source");
+        let summaries = ctx.wiki().join(source_folder);
+        if !summaries.exists() {
+            return index;
+        }
+
+        for page in markdown_files(&summaries) {
+            let fm = frontmatter(&page);
+            let mut has_metadata = false;
+            if let Some(v) = fm.get("source_path").filter(|v| !v.is_empty()) {
+                index.by_source_path.insert(v.clone());
+                has_metadata = true;
+            }
+            if let Some(v) = fm.get("source_id").filter(|v| !v.is_empty()) {
+                index.by_source_id.insert(v.clone());
+                has_metadata = true;
+            }
+            if let Some(v) = fm.get("canonical_id").filter(|v| !v.is_empty()) {
+                index.by_canonical_id.insert(v.clone());
+                has_metadata = true;
+            }
+            if !has_metadata {
+                index.fallback_pages.push(page);
+            }
+        }
+
+        index
     }
-    let raw_rel = ctx.rel(raw_path);
-    let raw_id = source_id_for(ctx, raw_path);
-    let raw_canonical_id = canonical_id_for_existing(raw_path);
-    markdown_files(&summaries).into_iter().any(|page| {
-        let text = read_text(&page);
-        text.contains(&raw_rel) || text.contains(&raw_id) || text.contains(&raw_canonical_id)
-    })
+
+    pub fn contains_source(&self, ctx: &Ctx, path: &Path) -> bool {
+        let rel = ctx.rel(path);
+        if self.by_source_path.contains(&rel) {
+            return true;
+        }
+
+        let source_id = source_id_for(ctx, path);
+        if self.by_source_id.contains(&source_id) {
+            return true;
+        }
+
+        let canonical_id = canonical_id_for_existing(path);
+        if self.by_canonical_id.contains(&canonical_id) {
+            return true;
+        }
+
+        if !self.fallback_pages.is_empty() {
+            return self.fallback_pages.iter().any(|page| {
+                let text = read_text(page);
+                text.contains(&rel) || text.contains(&source_id) || text.contains(&canonical_id)
+            });
+        }
+
+        false
+    }
 }
 
 #[cfg(test)]
@@ -503,6 +583,48 @@ mod tests {
             .unwrap()
             .as_nanos();
         env::temp_dir().join(format!("agents-wiki-{name}-{nonce}"))
+    }
+
+    #[test]
+    fn summary_index_resolves_metadata_and_fallbacks() {
+        let vault = temp_vault("summary-index-test");
+        let ctx = Ctx::new(vault.clone());
+        let source_folder = ctx.taxonomy.folder_for("source");
+        let summaries_dir = ctx.wiki().join(source_folder);
+        fs::create_dir_all(&summaries_dir).unwrap();
+        fs::create_dir_all(ctx.raw()).unwrap();
+
+        let raw_file = ctx.raw().join("test-source.md");
+        fs::write(
+            &raw_file,
+            "---\nsource_id: src-123\ncanonical_id: can-123\n---\n",
+        )
+        .unwrap();
+
+        // 1. Initially empty
+        let index = SummaryIndex::build(&ctx);
+        assert!(!index.contains_source(&ctx, &raw_file));
+
+        // 2. Add summary with frontmatter metadata
+        let summary_file1 = summaries_dir.join("summary1.md");
+        fs::write(
+            &summary_file1,
+            "---\nsource_path: raw/test-source.md\nsource_id: src-123\ncanonical_id: can-123\n---\n",
+        )
+        .unwrap();
+
+        let index = SummaryIndex::build(&ctx);
+        assert!(index.contains_source(&ctx, &raw_file));
+
+        // 3. Add summary page without metadata but matching in body
+        fs::remove_file(&summary_file1).unwrap();
+        let summary_file2 = summaries_dir.join("summary2.md");
+        fs::write(&summary_file2, "Reference to raw/test-source.md in body\n").unwrap();
+
+        let index = SummaryIndex::build(&ctx);
+        assert!(index.contains_source(&ctx, &raw_file));
+
+        fs::remove_dir_all(vault).unwrap();
     }
 
     #[test]

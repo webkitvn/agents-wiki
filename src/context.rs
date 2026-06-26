@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::util::canonical_lossy;
 
-pub const DEFAULT_VAULT: &str = "~/Documents/Agents Wiki";
+pub const DEFAULT_VAULT: &str = "~/Documents/agents-wiki";
 pub const CONFIG_PATH: &str = "~/.agents-wiki/config.yml";
 pub const GITIGNORE_RULES: &[&str] = &[
     ".DS_Store",
@@ -142,16 +142,37 @@ impl Taxonomy {
     }
 }
 
-#[derive(Clone)]
+use std::sync::OnceLock;
+
 pub struct Ctx {
     pub vault: PathBuf,
     pub taxonomy: Taxonomy,
+    vault_canonical: OnceLock<PathBuf>,
+}
+
+impl Clone for Ctx {
+    fn clone(&self) -> Self {
+        Self {
+            vault: self.vault.clone(),
+            taxonomy: self.taxonomy.clone(),
+            vault_canonical: OnceLock::new(),
+        }
+    }
 }
 
 impl Ctx {
     pub fn new(vault: PathBuf) -> Self {
         let taxonomy = Taxonomy::load(&vault);
-        Self { vault, taxonomy }
+        Self {
+            vault,
+            taxonomy,
+            vault_canonical: OnceLock::new(),
+        }
+    }
+
+    pub fn vault_canonical(&self) -> &Path {
+        self.vault_canonical
+            .get_or_init(|| canonical_lossy(&self.vault))
     }
 
     pub fn raw(&self) -> PathBuf {
@@ -198,8 +219,7 @@ impl Ctx {
 
     pub fn rel(&self, path: &Path) -> String {
         let abs = canonical_lossy(path);
-        let vault = canonical_lossy(&self.vault);
-        abs.strip_prefix(&vault)
+        abs.strip_prefix(self.vault_canonical())
             .ok()
             .and_then(|p| p.to_str())
             .unwrap_or_else(|| path.to_str().unwrap_or(""))

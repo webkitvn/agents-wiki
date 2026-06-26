@@ -205,8 +205,8 @@ mod tests {
 
     #[test]
     fn parses_config_vault_path() {
-        let vault = parse_config_vault_path("vault_path: \"/tmp/Agents Wiki\"\n");
-        assert_eq!(vault.as_deref(), Some("/tmp/Agents Wiki"));
+        let vault = parse_config_vault_path("vault_path: \"/tmp/agents-wiki\"\n");
+        assert_eq!(vault.as_deref(), Some("/tmp/agents-wiki"));
     }
 
     #[test]

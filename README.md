@@ -40,14 +40,14 @@ The installer:
 Then configure and scaffold your vault location:
 
 ```bash
-agents-wiki init "$HOME/Documents/Agents Wiki"
+agents-wiki init "$HOME/Documents/agents-wiki"
 ```
 
 Use `--force` only when you intentionally want to overwrite an existing
 `~/.agents-wiki/config.yml` vault path:
 
 ```bash
-agents-wiki init "$HOME/Documents/Agents Wiki" --force
+agents-wiki init "$HOME/Documents/agents-wiki" --force
 ```
 
 ## Configuration
@@ -61,7 +61,7 @@ Default config path:
 Schema:
 
 ```yaml
-vault_path: "/path/to/Agents Wiki"
+vault_path: "/path/to/agents-wiki"
 ```
 
 Vault resolution precedence:
@@ -69,7 +69,7 @@ Vault resolution precedence:
 1. `--vault /path/to/vault`
 2. `AGENTS_WIKI_VAULT=/path/to/vault`
 3. `~/.agents-wiki/config.yml`
-4. `~/Documents/Agents Wiki`
+4. `~/Documents/agents-wiki`
 
 ## Usage
 
@@ -80,7 +80,7 @@ agents-wiki guide
 ```
 
 ```bash
-agents-wiki init "$HOME/Documents/Agents Wiki"
+agents-wiki init "$HOME/Documents/agents-wiki"
 agents-wiki doctor
 agents-wiki doctor --repair
 agents-wiki status

@@ -11,3 +11,15 @@ serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
 url = "2"
+
+[dev-dependencies]
+criterion = "0.5"
+tempfile = "3"
+
+[[bench]]
+name = "scaling"
+harness = false
+
+[[bench]]
+name = "functions"
+harness = false

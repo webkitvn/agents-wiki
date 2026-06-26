@@ -72,5 +72,5 @@ If '${bin_dir}' is not on PATH, add this to your shell profile:
   export PATH="${bin_dir}:\$PATH"
 
 Then initialize a vault location:
-  agents-wiki init "\$HOME/Documents/Agents Wiki"
+  agents-wiki init "\$HOME/Documents/agents-wiki"
 EOF

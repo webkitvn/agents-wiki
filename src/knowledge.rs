@@ -1,5 +1,10 @@
 use serde_json::json;
-use std::{ffi::OsStr, fs, path::PathBuf, process::Command};
+use std::{
+    fs::{self, File},
+    io::{BufRead, BufReader},
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use crate::{
     args::{has_flag, opt_value, required_pos},
@@ -7,9 +12,8 @@ use crate::{
     health::{parse_usize_opt, validate_flags},
     util::{
         add_index_entry, append_log, canonical_id_for_existing, canonical_id_for_file,
-        canonical_id_for_new, markdown_files, page_path, read_text, recursive_files,
-        resolve_vault_path, slugify, source_files, source_id_for, source_records, summary_exists,
-        today, validate_open_path, write_new,
+        canonical_id_for_new, markdown_files, page_path, read_text, resolve_vault_path, slugify,
+        source_files, source_id_for, source_records, today, validate_open_path, write_new,
     },
 };
 
@@ -59,9 +63,10 @@ pub fn paths(ctx: &Ctx) -> Result<i32, String> {
 
 pub fn next(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
     validate_flags(args, &["--json"])?;
+    let summaries_index = crate::util::SummaryIndex::build(ctx);
     let pending: Vec<PathBuf> = source_files(ctx)
         .into_iter()
-        .filter(|path| !summary_exists(ctx, path))
+        .filter(|path| !summaries_index.contains_source(ctx, path))
         .collect();
     if has_flag(args, "--json") {
         let rows: Vec<_> = pending
@@ -341,16 +346,54 @@ pub fn search(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
+fn recursive_search_files(root: &Path, assets_dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    fn walk(path: &Path, assets_dir: &Path, out: &mut Vec<PathBuf>) {
+        if path == assets_dir {
+            return;
+        }
+        let Ok(entries) = fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let item = entry.path();
+            let Ok(meta) = fs::symlink_metadata(&item) else {
+                continue;
+            };
+            if meta.is_dir() {
+                walk(&item, assets_dir, out);
+            } else if meta.is_file() {
+                if let Some(ext) = item.extension().and_then(|e| e.to_str()) {
+                    let ext_lower = ext.to_lowercase();
+                    if matches!(
+                        ext_lower.as_str(),
+                        "md" | "txt" | "json" | "yml" | "yaml" | "toml" | "rs"
+                    ) {
+                        out.push(item);
+                    }
+                }
+            }
+        }
+    }
+    walk(root, assets_dir, &mut out);
+    out.sort();
+    out
+}
+
 fn search_matches(ctx: &Ctx, query: &str, limit: usize) -> Vec<String> {
     let query = query.to_lowercase();
     let mut out = Vec::new();
+    let assets_dir = ctx.assets();
     for root in [ctx.raw(), ctx.wiki()] {
-        for path in recursive_files(&root) {
-            if path.extension() == Some(OsStr::new("pyc")) {
+        for path in recursive_search_files(&root, &assets_dir) {
+            let Ok(file) = File::open(&path) else {
                 continue;
-            }
-            let text = read_text(&path);
-            for (index, line) in text.lines().enumerate() {
+            };
+            let reader = BufReader::new(file);
+            for (index, line) in reader.lines().enumerate() {
+                let Ok(line) = line else {
+                    continue;
+                };
                 if line.to_lowercase().contains(&query) {
                     out.push(format!("{}:{}: {}", ctx.rel(&path), index + 1, line.trim()));
                     if out.len() >= limit {
