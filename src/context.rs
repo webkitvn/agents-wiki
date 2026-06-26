@@ -16,6 +16,9 @@ pub const GITIGNORE_RULES: &[&str] = &[
     "target/",
 ];
 
+/// Reserved top-level names that taxonomy folders must not collide with.
+const RESERVED_FOLDERS: &[&str] = &["raw", ".git", ".obsidian"];
+
 /// One page kind in the wiki taxonomy: how a `kind` maps to a `wiki/<folder>/`
 /// directory and a `## <section>` heading in `index.md`.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -36,6 +39,36 @@ pub struct Taxonomy {
 #[derive(Deserialize)]
 struct AgentsFrontmatter {
     taxonomy: Option<Vec<PageKind>>,
+}
+
+/// Validate that a taxonomy folder value is safe to use as a path component
+/// under `wiki/`. Rejects empty strings, absolute paths, parent traversal,
+/// path separators, `.git`, and other reserved roots.
+pub fn validate_taxonomy_folder(folder: &str) -> Result<(), String> {
+    if folder.is_empty() {
+        return Err("taxonomy folder must not be empty".to_string());
+    }
+    if folder.contains('/') || folder.contains('\\') {
+        return Err(format!(
+            "taxonomy folder must be a single path component, got: {folder:?}"
+        ));
+    }
+    if folder == ".." || folder == "." {
+        return Err(format!(
+            "taxonomy folder must not be a relative path component: {folder:?}"
+        ));
+    }
+    if folder.starts_with('/') {
+        return Err(format!(
+            "taxonomy folder must not be an absolute path: {folder:?}"
+        ));
+    }
+    if RESERVED_FOLDERS.contains(&folder) {
+        return Err(format!(
+            "taxonomy folder conflicts with a reserved directory: {folder:?}"
+        ));
+    }
+    Ok(())
 }
 
 impl Taxonomy {
@@ -67,7 +100,17 @@ impl Taxonomy {
         let end = body.find("\n---")?;
         let parsed: AgentsFrontmatter = serde_yaml::from_str(&body[..end]).ok()?;
         let kinds = parsed.taxonomy.filter(|kinds| !kinds.is_empty())?;
-        Some(Self { kinds })
+        // Silently drop any kind with an invalid folder so a bad entry in
+        // AGENTS.md does not prevent the CLI from starting, but only keeps
+        // entries that are structurally safe.
+        let safe_kinds: Vec<PageKind> = kinds
+            .into_iter()
+            .filter(|kind| validate_taxonomy_folder(&kind.folder).is_ok())
+            .collect();
+        if safe_kinds.is_empty() {
+            return None;
+        }
+        Some(Self { kinds: safe_kinds })
     }
 
     pub fn kinds(&self) -> &[PageKind] {
@@ -76,6 +119,26 @@ impl Taxonomy {
 
     pub fn get(&self, kind: &str) -> Option<&PageKind> {
         self.kinds.iter().find(|item| item.kind == kind)
+    }
+
+    /// Return the folder for a given kind, or a sensible hardcoded default
+    /// so callers that depend on `source`/`review` always get a valid answer
+    /// even if the taxonomy was customised to omit those core kinds.
+    pub fn folder_for<'a>(&'a self, kind: &'a str) -> &'a str {
+        self.get(kind).map(|k| k.folder.as_str()).unwrap_or(kind)
+    }
+
+    /// Return the section heading for a given kind, with a capitalised fallback.
+    pub fn section_for(&self, kind: &str) -> String {
+        self.get(kind)
+            .map(|k| k.section.clone())
+            .unwrap_or_else(|| {
+                let mut s = kind.to_string();
+                if let Some(first) = s.get_mut(0..1) {
+                    first.make_ascii_uppercase();
+                }
+                s
+            })
     }
 }
 
@@ -126,6 +189,8 @@ impl Ctx {
     pub fn required_dirs(&self) -> Vec<PathBuf> {
         let mut dirs = vec![self.raw(), self.assets(), self.wiki()];
         for kind in self.taxonomy.kinds() {
+            // Folders have already been validated at taxonomy load time, so
+            // joining them here is safe.
             dirs.push(self.wiki().join(&kind.folder));
         }
         dirs
@@ -170,6 +235,42 @@ mod tests {
     #[test]
     fn empty_taxonomy_list_falls_back_to_default() {
         let text = "---\ntaxonomy: []\n---\n\n# Body\n";
+        assert_eq!(Taxonomy::from_agents_text(text), None);
+    }
+
+    #[test]
+    fn validate_taxonomy_folder_rejects_unsafe_paths() {
+        assert!(validate_taxonomy_folder("").is_err());
+        assert!(validate_taxonomy_folder("..").is_err());
+        assert!(validate_taxonomy_folder(".").is_err());
+        assert!(validate_taxonomy_folder("a/b").is_err());
+        assert!(validate_taxonomy_folder("/tmp").is_err());
+        assert!(validate_taxonomy_folder(".git").is_err());
+        assert!(validate_taxonomy_folder("raw").is_err());
+    }
+
+    #[test]
+    fn validate_taxonomy_folder_accepts_safe_paths() {
+        assert!(validate_taxonomy_folder("concepts").is_ok());
+        assert!(validate_taxonomy_folder("my-notes").is_ok());
+        assert!(validate_taxonomy_folder("people").is_ok());
+    }
+
+    #[test]
+    fn taxonomy_silently_drops_unsafe_folder_entries() {
+        let text = "---\ntaxonomy:\n  - kind: bad\n    folder: ../outside\n    section: Bad\n  - kind: good\n    folder: concepts\n    section: Concepts\n---\n\n# Schema\n";
+        let taxonomy = Taxonomy::from_agents_text(text).expect("should have safe entries");
+        assert!(
+            taxonomy.get("bad").is_none(),
+            "unsafe folder must be dropped"
+        );
+        assert!(taxonomy.get("good").is_some(), "safe folder must be kept");
+    }
+
+    #[test]
+    fn taxonomy_all_unsafe_falls_back_to_default() {
+        let text = "---\ntaxonomy:\n  - kind: bad\n    folder: .git/hooks\n    section: Bad\n---\n\n# Schema\n";
+        // from_agents_text returns None when all entries are dropped
         assert_eq!(Taxonomy::from_agents_text(text), None);
     }
 }

@@ -82,13 +82,15 @@ agents-wiki open "wiki/concepts/foo.md"  # open a vault path in Obsidian
 ```bash
 agents-wiki lint [--json] [--stale-days N]   # default stale window 90 days
 #   reports: missing index entries, missing citations, duplicate ids,
-#   orphan pages, stale active pages, and off-taxonomy pages (pages not under a
-#   taxonomy folder — move them or extend AGENTS.md `taxonomy`). Exit 1 if any ERROR.
+#   orphan pages, stale active pages, off-taxonomy pages (pages not under a
+#   taxonomy folder — move them or extend AGENTS.md `taxonomy`), and
+#   taxonomy sections missing from index.md. Exit 1 if any ERROR.
 
 agents-wiki doctor [--json] [--repair]
 #   checks vault structure / git / .gitignore / pending sources / reviews.
 #   --repair scaffolds missing dirs and core files (index.md, log.md,
-#   AGENTS.md, "LLM Wiki.md"), inits git when available, and fixes .gitignore.
+#   AGENTS.md, "LLM Wiki.md"), adds missing taxonomy section headings to an
+#   existing index.md, inits git when available, and fixes .gitignore.
 ```
 
 Run `agents-wiki init "/path/to/Agents Wiki"` once to configure and initialize a new vault.
@@ -104,6 +106,11 @@ until git is installed and initialized.
 ## Notes
 
 - All path arguments are relative to the vault root (or absolute inside it).
+- `open` only accepts vault-relative paths (no `..`, no absolute paths).
 - Flags accept both `--flag value` and `--flag=value`.
+- Unknown flags (e.g. `--typo`) and non-numeric values for numeric options
+  (e.g. `--limit abc`) are rejected with an error — they do not silently fall back.
+- `new-source --file` correctly deduplicates binary files (PDFs, images) by
+  hashing their raw bytes rather than treating all unreadable files as identical.
 - Build from source: `cargo build --release` (binary at `target/release/agents-wiki`);
   install with `./scripts/install.sh`, then run `agents-wiki init "/path/to/Agents Wiki"`.

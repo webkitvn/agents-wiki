@@ -1,19 +1,19 @@
-use serde_json::{json, Value};
+use serde::Serialize;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
     fs,
     io::{self, Write},
-    os::unix::fs::PermissionsExt,
     path::Path,
     process::Command,
 };
 
 use crate::{
-    args::{has_flag, opt_value},
+    args::has_flag,
     context::{Ctx, Taxonomy, GITIGNORE_RULES},
     util::{
-        append_log, days_between, frontmatter, markdown_files, read_text, source_files,
+        append_log, days_between, frontmatter, fs_err, markdown_files, read_text, source_files,
         summary_exists, today,
     },
 };
@@ -21,57 +21,165 @@ use crate::{
 const DEFAULT_STALE_DAYS: i64 = 90;
 const GIT_COMMAND: &str = "git";
 
+// ─── Typed report types ───────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct LintReport {
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DoctorIssue {
+    pub severity: String,
+    pub code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule: Option<String>,
+    pub repairable: bool,
+}
+
+impl DoctorIssue {
+    fn error(code: &str, path: impl Into<String>) -> Self {
+        Self {
+            severity: "error".to_string(),
+            code: code.to_string(),
+            path: Some(path.into()),
+            message: None,
+            rule: None,
+            repairable: true,
+        }
+    }
+    fn warning(code: &str) -> Self {
+        Self {
+            severity: "warning".to_string(),
+            code: code.to_string(),
+            path: None,
+            message: None,
+            rule: None,
+            repairable: false,
+        }
+    }
+    fn warning_path(code: &str, path: impl Into<String>, repairable: bool) -> Self {
+        Self {
+            severity: "warning".to_string(),
+            code: code.to_string(),
+            path: Some(path.into()),
+            message: None,
+            rule: None,
+            repairable,
+        }
+    }
+    fn warning_rule(code: &str, rule: impl Into<String>) -> Self {
+        Self {
+            severity: "warning".to_string(),
+            code: code.to_string(),
+            path: None,
+            message: None,
+            rule: Some(rule.into()),
+            repairable: true,
+        }
+    }
+    fn from_lint_error(message: &str) -> Self {
+        Self {
+            severity: "error".to_string(),
+            code: "lint_error".to_string(),
+            path: None,
+            message: Some(message.to_string()),
+            rule: None,
+            repairable: false,
+        }
+    }
+    fn from_lint_warning(message: &str) -> Self {
+        Self {
+            severity: "warning".to_string(),
+            code: "lint_warning".to_string(),
+            path: None,
+            message: Some(message.to_string()),
+            rule: None,
+            repairable: false,
+        }
+    }
+
+    fn label(&self) -> &str {
+        self.path
+            .as_deref()
+            .or(self.rule.as_deref())
+            .or(self.message.as_deref())
+            .unwrap_or("")
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorState {
+    pending_sources: Vec<String>,
+    open_reviews: Vec<String>,
+    git_available: bool,
+    git_initialized: bool,
+    git_dirty: Option<Vec<String>>,
+    cli_executable: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorReport {
+    vault: String,
+    healthy: bool,
+    issues: Vec<DoctorIssue>,
+    state: DoctorState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repaired: Option<Vec<String>>,
+}
+
+// ─── Public commands ──────────────────────────────────────────────────────────
+
 pub fn lint(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
-    let stale_days = opt_value(args, "--stale-days")
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(DEFAULT_STALE_DAYS);
+    validate_flags(args, &["--stale-days", "--json"])?;
+    let stale_days = parse_i64_opt(args, "--stale-days")?.unwrap_or(DEFAULT_STALE_DAYS);
     let report = lint_report(ctx, stale_days);
     if has_flag(args, "--json") {
-        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+        );
     } else {
-        let errors = report["errors"].as_array().unwrap();
-        let warnings = report["warnings"].as_array().unwrap();
-        for item in errors {
-            println!("ERROR {}", item.as_str().unwrap());
+        for item in &report.errors {
+            println!("ERROR {item}");
         }
-        for item in warnings {
-            println!("WARN {}", item.as_str().unwrap());
+        for item in &report.warnings {
+            println!("WARN {item}");
         }
-        if errors.is_empty() && warnings.is_empty() {
+        if report.errors.is_empty() && report.warnings.is_empty() {
             println!("ok");
         }
     }
-    Ok(if report["errors"].as_array().unwrap().is_empty() {
-        0
-    } else {
-        1
-    })
+    Ok(if report.errors.is_empty() { 0 } else { 1 })
 }
 
 pub fn doctor(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
-    let mut repaired = Vec::new();
+    validate_flags(args, &["--repair", "--json"])?;
+    let mut repaired: Option<Vec<String>> = None;
     if has_flag(args, "--repair") {
-        repaired = repair_doctor(ctx)?;
+        let items = repair_doctor(ctx)?;
+        if !items.is_empty() {
+            repaired = Some(items);
+        }
     }
-    let mut report = doctor_report(ctx);
-    if !repaired.is_empty() {
-        report["repaired"] = json!(repaired);
-    }
+    let mut report = build_doctor_report(ctx);
+    report.repaired = repaired;
     if has_flag(args, "--json") {
-        println!("{}", serde_json::to_string_pretty(&report).unwrap());
-    } else {
-        println!("vault: {}", report["vault"].as_str().unwrap());
         println!(
-            "healthy: {}",
-            if report["healthy"].as_bool().unwrap() {
-                "yes"
-            } else {
-                "no"
-            }
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
         );
+    } else {
+        println!("vault: {}", report.vault);
+        println!("healthy: {}", if report.healthy { "yes" } else { "no" });
         println!(
             "git_initialized: {}",
-            if report["state"]["git_initialized"].as_bool().unwrap() {
+            if report.state.git_initialized {
                 "yes"
             } else {
                 "no"
@@ -79,52 +187,32 @@ pub fn doctor(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
         );
         println!(
             "git_dirty: {}",
-            report["state"]["git_dirty"]
-                .as_array()
+            report
+                .state
+                .git_dirty
+                .as_ref()
                 .map(|items| items.len())
                 .unwrap_or(0)
         );
-        println!(
-            "pending_sources: {}",
-            report["state"]["pending_sources"].as_array().unwrap().len()
-        );
-        println!(
-            "open_reviews: {}",
-            report["state"]["open_reviews"].as_array().unwrap().len()
-        );
-        if let Some(items) = report.get("repaired").and_then(|value| value.as_array()) {
+        println!("pending_sources: {}", report.state.pending_sources.len());
+        println!("open_reviews: {}", report.state.open_reviews.len());
+        if let Some(items) = &report.repaired {
             println!("repaired:");
             for item in items {
-                println!("  - {}", item.as_str().unwrap());
+                println!("  - {item}");
             }
         }
-        if report["issues"].as_array().unwrap().is_empty() {
+        if report.issues.is_empty() {
             println!("issues: none");
         } else {
             println!("issues:");
-            for issue in report["issues"].as_array().unwrap() {
-                let label = issue
-                    .get("path")
-                    .or_else(|| issue.get("rule"))
-                    .or_else(|| issue.get("message"))
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("");
-                println!(
-                    "  - {} {}: {}",
-                    issue["severity"].as_str().unwrap(),
-                    issue["code"].as_str().unwrap(),
-                    label
-                );
+            for issue in &report.issues {
+                println!("  - {} {}: {}", issue.severity, issue.code, issue.label());
             }
         }
     }
     Ok(
-        if report["issues"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item["severity"] == "error")
-        {
+        if report.issues.iter().any(|issue| issue.severity == "error") {
             1
         } else {
             0
@@ -171,7 +259,9 @@ pub fn reset(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
-pub fn lint_report(ctx: &Ctx, stale_days: i64) -> Value {
+// ─── Report builders ──────────────────────────────────────────────────────────
+
+pub fn lint_report(ctx: &Ctx, stale_days: i64) -> LintReport {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
     let today_str = today();
@@ -199,10 +289,14 @@ pub fn lint_report(ctx: &Ctx, stale_days: i64) -> Value {
         {
             continue;
         }
-        if !index_text.contains(&ctx.rel(&page))
-            && !index_text.contains(page.file_stem().unwrap().to_str().unwrap())
+        // Use structural wikilink check instead of substring to avoid false positives
+        // on short stems (e.g. "ai", "ml").
+        let rel = ctx.rel(&page);
+        let link_no_ext = rel.strip_suffix(".md").unwrap_or(&rel);
+        if !index_text.contains(&format!("[[{link_no_ext}]]"))
+            && !index_text.contains(&format!("[[{link_no_ext}|"))
         {
-            warnings.push(format!("wiki page missing from index: {}", ctx.rel(&page)));
+            warnings.push(format!("wiki page missing from index: {rel}"));
         }
         let fields = frontmatter(&page);
         if fields.get("status").is_some_and(|value| value == "active")
@@ -226,7 +320,8 @@ pub fn lint_report(ctx: &Ctx, stale_days: i64) -> Value {
                 }
             }
         }
-        if page.parent().and_then(|parent| parent.file_name()) == Some(OsStr::new("sources"))
+        let source_folder = ctx.taxonomy.folder_for("source");
+        if page.parent().and_then(|parent| parent.file_name()) == Some(OsStr::new(source_folder))
             && fields.get("status").is_some_and(|value| value == "draft")
         {
             warnings.push(format!("draft source summary: {}", ctx.rel(&page)));
@@ -312,14 +407,16 @@ pub fn lint_report(ctx: &Ctx, stale_days: i64) -> Value {
         {
             continue;
         }
-        let stem = page.file_stem().and_then(|value| value.to_str()).unwrap();
         let rel = ctx.rel(page);
         let link_no_ext = rel.strip_suffix(".md").unwrap_or(&rel);
+        // Use structural wikilink check for orphan detection.
         let inbound = page_texts.iter().any(|(other, text)| {
-            other != page && (text.contains(link_no_ext) || text.contains(&format!("[[{stem}")))
+            other != page
+                && (text.contains(&format!("[[{link_no_ext}]]"))
+                    || text.contains(&format!("[[{link_no_ext}|")))
         });
         if !inbound {
-            warnings.push(format!("orphan wiki page (no inbound links): {}", rel));
+            warnings.push(format!("orphan wiki page (no inbound links): {rel}"));
         }
     }
 
@@ -352,14 +449,25 @@ pub fn lint_report(ctx: &Ctx, stale_days: i64) -> Value {
         }
     }
 
-    json!({"errors": errors, "warnings": warnings})
+    // Check that each taxonomy section exists in index.md.
+    for kind in ctx.taxonomy.kinds() {
+        let heading = format!("## {}", kind.section);
+        if !index_text.contains(&heading) {
+            warnings.push(format!(
+                "taxonomy section missing from index.md: {}",
+                kind.section
+            ));
+        }
+    }
+
+    LintReport { errors, warnings }
 }
 
-fn doctor_report(ctx: &Ctx) -> Value {
+fn build_doctor_report(ctx: &Ctx) -> DoctorReport {
     let mut issues = Vec::new();
     for dir in ctx.required_dirs() {
         if !dir.exists() {
-            issues.push(json!({"severity": "error", "code": "missing_dir", "path": ctx.rel(&dir), "repairable": true}));
+            issues.push(DoctorIssue::error("missing_dir", ctx.rel(&dir)));
         }
     }
     for file in [
@@ -370,55 +478,59 @@ fn doctor_report(ctx: &Ctx) -> Value {
         ctx.gitignore(),
     ] {
         if !file.exists() {
-            issues.push(json!({"severity": "error", "code": "missing_file", "path": ctx.rel(&file), "repairable": true}));
+            issues.push(DoctorIssue::error("missing_file", ctx.rel(&file)));
         }
     }
-    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("agents-wiki"));
-    let cli_executable = exe
-        .metadata()
-        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false);
+
+    let cli_executable = is_cli_executable();
     if !cli_executable {
-        issues.push(json!({"severity": "error", "code": "cli_not_executable", "path": exe.display().to_string(), "repairable": true}));
+        let exe_path = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "agents-wiki".to_string());
+        issues.push(DoctorIssue::error("cli_not_executable", exe_path));
     }
+
     let git_available = git_available();
     let git_initialized = git_available && git_repo_exists(ctx);
     if !git_available {
-        issues.push(json!({"severity": "warning", "code": "git_unavailable", "path": ".", "repairable": false}));
+        issues.push(DoctorIssue::warning("git_unavailable"));
     } else if !git_initialized {
-        issues.push(json!({"severity": "warning", "code": "git_not_initialized", "path": ".", "repairable": true}));
+        issues.push(DoctorIssue::warning_path("git_not_initialized", ".", true));
     }
     for rule in missing_gitignore_rules(ctx) {
-        issues.push(json!({"severity": "warning", "code": "missing_gitignore_rule", "rule": rule, "repairable": true}));
+        issues.push(DoctorIssue::warning_rule("missing_gitignore_rule", rule));
     }
+
     let lint = lint_report(ctx, DEFAULT_STALE_DAYS);
-    for item in lint["errors"].as_array().unwrap() {
-        issues.push(json!({"severity": "error", "code": "lint_error", "message": item.as_str().unwrap(), "repairable": false}));
+    for msg in &lint.errors {
+        issues.push(DoctorIssue::from_lint_error(msg));
     }
-    for item in lint["warnings"].as_array().unwrap() {
-        issues.push(json!({"severity": "warning", "code": "lint_warning", "message": item.as_str().unwrap(), "repairable": false}));
+    for msg in &lint.warnings {
+        issues.push(DoctorIssue::from_lint_warning(msg));
     }
-    let healthy = !issues.iter().any(|issue| issue["severity"] == "error");
-    json!({
-        "vault": ctx.vault.display().to_string(),
-        "healthy": healthy,
-        "issues": issues,
-        "state": {
-            "pending_sources": pending_source_items(ctx),
-            "open_reviews": open_review_items(ctx),
-            "git_available": git_available,
-            "git_initialized": git_initialized,
-            "git_dirty": git_dirty_status(ctx),
-            "cli_executable": cli_executable,
-        }
-    })
+
+    let healthy = !issues.iter().any(|issue| issue.severity == "error");
+    DoctorReport {
+        vault: ctx.vault.display().to_string(),
+        healthy,
+        issues,
+        state: DoctorState {
+            pending_sources: pending_source_items(ctx),
+            open_reviews: open_review_items(ctx),
+            git_available,
+            git_initialized,
+            git_dirty: git_dirty_status(ctx),
+            cli_executable,
+        },
+        repaired: None,
+    }
 }
 
 pub fn repair_doctor(ctx: &Ctx) -> Result<Vec<String>, String> {
     let mut repaired = Vec::new();
     for dir in ctx.required_dirs() {
         if !dir.exists() {
-            fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+            fs::create_dir_all(&dir).map_err(|err| fs_err(&dir, "create directory", err))?;
             repaired.push(format!("Created `{}`.", ctx.rel(&dir)));
         }
     }
@@ -433,6 +545,10 @@ pub fn repair_doctor(ctx: &Ctx) -> Result<Vec<String>, String> {
         }
     }
 
+    // Repair missing taxonomy sections in an existing index.md.
+    let index_sections_repaired = repair_index_sections(ctx)?;
+    repaired.extend(index_sections_repaired);
+
     let missing = missing_gitignore_rules(ctx);
     if !missing.is_empty() {
         let mut existing = read_text(&ctx.gitignore());
@@ -441,7 +557,8 @@ pub fn repair_doctor(ctx: &Ctx) -> Result<Vec<String>, String> {
         }
         existing.push_str(&missing.join("\n"));
         existing.push('\n');
-        fs::write(ctx.gitignore(), existing).map_err(|err| err.to_string())?;
+        let gitignore = ctx.gitignore();
+        fs::write(&gitignore, existing).map_err(|err| fs_err(&gitignore, "write", err))?;
         repaired.push(format!("Updated `{}`.", ctx.rel(&ctx.gitignore())));
     }
     let repaired_before_git = !repaired.is_empty();
@@ -453,6 +570,39 @@ pub fn repair_doctor(ctx: &Ctx) -> Result<Vec<String>, String> {
     }
     Ok(repaired)
 }
+
+/// Idempotently add any missing `## {section}` headings to an existing
+/// `wiki/index.md` that doesn't have them yet. Returns the list of repair
+/// messages for each section that was added.
+fn repair_index_sections(ctx: &Ctx) -> Result<Vec<String>, String> {
+    let index = ctx.index();
+    if !index.exists() {
+        // Nothing to repair; the full skeleton will be written by `write_if_missing`.
+        return Ok(Vec::new());
+    }
+    let mut text = read_text(&index);
+    let mut added = Vec::new();
+    for kind in ctx.taxonomy.kinds() {
+        let heading = format!("## {}", kind.section);
+        if !text.contains(&heading) {
+            if !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&format!("\n{heading}\n"));
+            added.push(format!(
+                "Added `{}` section to `{}`.",
+                kind.section,
+                ctx.rel(&index)
+            ));
+        }
+    }
+    if !added.is_empty() {
+        fs::write(&index, &text).map_err(|err| fs_err(&index, "write", err))?;
+    }
+    Ok(added)
+}
+
+// ─── Reset helpers ────────────────────────────────────────────────────────────
 
 fn validate_reset_target(ctx: &Ctx) -> Result<(), String> {
     if !ctx.vault.is_dir() {
@@ -525,12 +675,15 @@ fn reset_vault_contents(ctx: &Ctx) -> Result<usize, String> {
     Ok(deleted)
 }
 
+// ─── Scaffold helpers ─────────────────────────────────────────────────────────
+
 fn write_if_missing(path: &Path, content: String) -> Result<bool, String> {
     if path.exists() {
         return Ok(false);
     }
-    fs::create_dir_all(path.parent().unwrap()).map_err(|err| err.to_string())?;
-    fs::write(path, content).map_err(|err| err.to_string())?;
+    let parent = path.parent().unwrap();
+    fs::create_dir_all(parent).map_err(|err| fs_err(parent, "create directory", err))?;
+    fs::write(path, content).map_err(|err| fs_err(path, "write", err))?;
     Ok(true)
 }
 
@@ -618,6 +771,8 @@ fn entrypoint_skeleton() -> String {
     format!("---\ntitle: LLM Wiki\ncreated: {}\ntype: vault-entrypoint\ntags: [llm-wiki, index]\n---\n\n# LLM Wiki\n\n- [[wiki/index]]\n- [[wiki/log]]\n", crate::util::today())
 }
 
+// ─── Git helpers ──────────────────────────────────────────────────────────────
+
 fn git_repo_exists(ctx: &Ctx) -> bool {
     git_repo_exists_with_command(ctx, GIT_COMMAND)
 }
@@ -697,8 +852,10 @@ fn missing_gitignore_rules(ctx: &Ctx) -> Vec<String> {
         .collect()
 }
 
+/// Returns open review items using the taxonomy-resolved reviews folder.
 fn open_review_items(ctx: &Ctx) -> Vec<String> {
-    markdown_files(&ctx.wiki().join("reviews"))
+    let reviews_folder = ctx.taxonomy.folder_for("review");
+    markdown_files(&ctx.wiki().join(reviews_folder))
         .into_iter()
         .filter(|path| {
             frontmatter(path)
@@ -717,6 +874,76 @@ fn pending_source_items(ctx: &Ctx) -> Vec<String> {
         .map(|path| ctx.rel(&path))
         .collect()
 }
+
+/// Check if the current CLI binary is executable. Portable across Unix/Windows.
+fn is_cli_executable() -> bool {
+    let exe = std::env::current_exe();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        exe.ok()
+            .and_then(|path| path.metadata().ok())
+            .map(|meta| meta.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        // On Windows a file is executable if it exists and has a .exe extension.
+        exe.ok()
+            .map(|path| {
+                path.exists()
+                    && path
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| ext.eq_ignore_ascii_case("exe"))
+                        .unwrap_or(true) // assume executable if no extension info
+            })
+            .unwrap_or(false)
+    }
+}
+
+// ─── CLI argument validation helpers ─────────────────────────────────────────
+
+/// Reject any `--foo` argument that is not in `allowed`. Value flags (e.g.
+/// `--stale-days 90`) are handled by checking the flag name only.
+pub fn validate_flags(args: &[String], allowed: &[&str]) -> Result<(), String> {
+    for arg in args {
+        if let Some(flag) = arg.strip_prefix("--") {
+            // Strip `=value` suffix for `--flag=value` style args.
+            let flag_name = format!("--{}", flag.split('=').next().unwrap_or(flag));
+            if !allowed.contains(&flag_name.as_str()) {
+                return Err(format!("unknown option: {flag_name}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Parse an optional `i64` flag value. Returns `Err` if the flag is present
+/// but its value is not a valid integer (instead of silently falling back).
+pub fn parse_i64_opt(args: &[String], flag: &str) -> Result<Option<i64>, String> {
+    match crate::args::opt_value(args, flag) {
+        None => Ok(None),
+        Some(value) => value
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|_| format!("{flag} must be an integer, got: {value:?}")),
+    }
+}
+
+/// Parse an optional `usize` flag value. Returns `Err` if the flag is present
+/// but its value is not a valid non-negative integer.
+pub fn parse_usize_opt(args: &[String], flag: &str) -> Result<Option<usize>, String> {
+    match crate::args::opt_value(args, flag) {
+        None => Ok(None),
+        Some(value) => value
+            .parse::<usize>()
+            .map(Some)
+            .map_err(|_| format!("{flag} must be a non-negative integer, got: {value:?}")),
+    }
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -841,6 +1068,45 @@ mod tests {
     }
 
     #[test]
+    fn repair_index_sections_adds_missing_headings() {
+        let vault = temp_vault("repair-index-sections");
+        fs::create_dir_all(&vault).unwrap();
+        // Pre-existing index with only one section.
+        let ctx = Ctx::new(vault.clone());
+        fs::create_dir_all(ctx.wiki()).unwrap();
+        fs::write(
+            ctx.index(),
+            "---\ntype: wiki-index\n---\n\n# Wiki Index\n\n## Sources\n",
+        )
+        .unwrap();
+
+        // Run repair on a vault that has a custom taxonomy with two kinds.
+        fs::write(
+            ctx.agents(),
+            "---\ntaxonomy:\n  - kind: source\n    folder: sources\n    section: Sources\n  - kind: concept\n    folder: concepts\n    section: Concepts\n---\n\n# Schema\n",
+        )
+        .unwrap();
+        let ctx = Ctx::new(vault.clone()); // reload taxonomy
+        let repaired = repair_index_sections(&ctx).unwrap();
+
+        assert!(
+            repaired.iter().any(|msg| msg.contains("Concepts")),
+            "missing section should be repaired: {repaired:#?}"
+        );
+        let index = read_text(&ctx.index());
+        assert!(
+            index.contains("## Concepts"),
+            "Concepts must be added: {index}"
+        );
+        assert!(
+            index.contains("## Sources"),
+            "existing Sources must be preserved: {index}"
+        );
+
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
     fn lint_flags_off_taxonomy_pages() {
         let vault = temp_vault("off-taxonomy");
         let ctx = Ctx::new(vault.clone());
@@ -866,20 +1132,16 @@ mod tests {
         .unwrap();
 
         let report = lint_report(&ctx, DEFAULT_STALE_DAYS);
-        let warnings: Vec<&str> = report["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|item| item.as_str().unwrap())
-            .collect();
-        let off: Vec<&&str> = warnings
+        let warnings = &report.warnings;
+        let off_strs: Vec<&str> = warnings
             .iter()
             .filter(|item| item.starts_with("off-taxonomy wiki page"))
+            .map(|s| s.as_str())
             .collect();
-        assert!(off.iter().any(|item| item.contains("notes/stray.md")));
-        assert!(off.iter().any(|item| item.contains("wiki/loose.md")));
+        assert!(off_strs.iter().any(|item| item.contains("notes/stray.md")));
+        assert!(off_strs.iter().any(|item| item.contains("wiki/loose.md")));
         assert!(
-            !off.iter().any(|item| item.contains("concepts/ok.md")),
+            !off_strs.iter().any(|item| item.contains("concepts/ok.md")),
             "page in a taxonomy folder must not be flagged: {warnings:#?}"
         );
 
@@ -893,7 +1155,7 @@ mod tests {
         repair_doctor(&ctx).unwrap();
         fs::write(
             ctx.wiki().join("concepts").join("hub.md"),
-            "---\ntitle: Hub\ntype: concept\n---\n\n# Hub\n\nSee [[linked]].\n",
+            "---\ntitle: Hub\ntype: concept\n---\n\n# Hub\n\nSee [[wiki/concepts/linked]].\n",
         )
         .unwrap();
         fs::write(
@@ -908,15 +1170,11 @@ mod tests {
         .unwrap();
 
         let report = lint_report(&ctx, DEFAULT_STALE_DAYS);
-        let warnings: Vec<&str> = report["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|item| item.as_str().unwrap())
-            .collect();
-        let orphans: Vec<&&str> = warnings
+        let warnings = &report.warnings;
+        let orphans: Vec<&str> = warnings
             .iter()
             .filter(|item| item.starts_with("orphan wiki page"))
+            .map(|s| s.as_str())
             .collect();
         assert!(
             orphans
@@ -986,5 +1244,26 @@ mod tests {
         assert!(vault.is_dir());
         assert!(is_dir_empty(&vault).unwrap());
         fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn validate_flags_rejects_unknown_options() {
+        let args = vec!["--json".to_string(), "--typo".to_string()];
+        assert!(validate_flags(&args, &["--json"]).is_err());
+        assert!(validate_flags(&args, &["--json", "--typo"]).is_ok());
+    }
+
+    #[test]
+    fn parse_i64_opt_returns_error_on_invalid_value() {
+        let args = vec!["--stale-days".to_string(), "ninety".to_string()];
+        assert!(parse_i64_opt(&args, "--stale-days").is_err());
+        let args2 = vec!["--stale-days".to_string(), "90".to_string()];
+        assert_eq!(parse_i64_opt(&args2, "--stale-days").unwrap(), Some(90));
+    }
+
+    #[test]
+    fn parse_usize_opt_returns_error_on_negative() {
+        let args = vec!["--limit".to_string(), "abc".to_string()];
+        assert!(parse_usize_opt(&args, "--limit").is_err());
     }
 }

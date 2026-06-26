@@ -4,11 +4,12 @@ use std::{ffi::OsStr, fs, path::PathBuf, process::Command};
 use crate::{
     args::{has_flag, opt_value, required_pos},
     context::Ctx,
+    health::{parse_usize_opt, validate_flags},
     util::{
         add_index_entry, append_log, canonical_id_for_existing, canonical_id_for_file,
         canonical_id_for_new, markdown_files, page_path, read_text, recursive_files,
         resolve_vault_path, slugify, source_files, source_id_for, source_records, summary_exists,
-        today, write_new,
+        today, validate_open_path, write_new,
     },
 };
 
@@ -57,6 +58,7 @@ pub fn paths(ctx: &Ctx) -> Result<i32, String> {
 }
 
 pub fn next(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
+    validate_flags(args, &["--json"])?;
     let pending: Vec<PathBuf> = source_files(ctx)
         .into_iter()
         .filter(|path| !summary_exists(ctx, path))
@@ -98,6 +100,7 @@ pub fn next(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
 }
 
 pub fn new_source(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
+    validate_flags(args, &["--url", "--note", "--file", "--force"])?;
     let pos = required_pos(
         args,
         1,
@@ -181,6 +184,7 @@ pub fn new_source(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
 }
 
 pub fn source_summary(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
+    validate_flags(args, &["--title"])?;
     let pos = required_pos(args, 1, "source-summary <raw/path> [--title TITLE]")?;
     let raw = resolve_vault_path(ctx, &pos[0])?;
     if !raw.is_file() {
@@ -221,6 +225,7 @@ pub fn source_summary(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
 }
 
 pub fn page(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
+    validate_flags(args, &[])?;
     let pos = required_pos(args, 2, "page <kind> <title>")?;
     let kind = &pos[0];
     let title = &pos[1];
@@ -255,6 +260,7 @@ pub fn page(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
 }
 
 pub fn review(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
+    validate_flags(args, &["--reason", "--source", "--context"])?;
     let pos = required_pos(
         args,
         1,
@@ -271,7 +277,9 @@ pub fn review(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
         today()
     );
     write_new(ctx, &path, &content)?;
-    add_index_entry(ctx, "Reviews", &ctx.rel(&path), title)?;
+    // Use the taxonomy-resolved section for the review kind.
+    let review_section = ctx.taxonomy.section_for("review");
+    add_index_entry(ctx, &review_section, &ctx.rel(&path), title)?;
     append_log(
         ctx,
         "review",
@@ -285,9 +293,11 @@ pub fn review(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
 }
 
 pub fn reviews(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
+    validate_flags(args, &["--status", "--json"])?;
     let status_filter = opt_value(args, "--status");
     let mut rows = Vec::new();
-    for path in markdown_files(&ctx.wiki().join("reviews")) {
+    let reviews_folder = ctx.taxonomy.folder_for("review");
+    for path in markdown_files(&ctx.wiki().join(reviews_folder)) {
         let fields = crate::util::frontmatter(&path);
         let status = fields.get("status").cloned().unwrap_or_default();
         if status_filter
@@ -322,10 +332,9 @@ pub fn reviews(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
 }
 
 pub fn search(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
+    validate_flags(args, &["--limit"])?;
     let pos = required_pos(args, 1, "search <query> [--limit N]")?;
-    let limit: usize = opt_value(args, "--limit")
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(20);
+    let limit: usize = parse_usize_opt(args, "--limit")?.unwrap_or(20);
     for line in search_matches(ctx, &pos[0], limit) {
         println!("{line}");
     }
@@ -355,6 +364,7 @@ fn search_matches(ctx: &Ctx, query: &str, limit: usize) -> Vec<String> {
 }
 
 pub fn log(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
+    validate_flags(args, &["--line"])?;
     let pos = required_pos(args, 2, "log <kind> <title> [--line LINE]")?;
     let lines: Vec<String> = args
         .iter()
@@ -373,7 +383,10 @@ pub fn log(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
 }
 
 pub fn open(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
+    validate_flags(args, &[])?;
     let pos = required_pos(args, 1, "open <path>")?;
+    // Validate that the path is vault-relative and safe before passing to Obsidian.
+    validate_open_path(&pos[0])?;
     let status = Command::new("obsidian")
         .arg(format!(
             "vault={}",
