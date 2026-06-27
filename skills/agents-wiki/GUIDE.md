@@ -27,6 +27,23 @@ agents-wiki guide          # print this embedded guide
 agents-wiki init "/path/to/agents-wiki" [--force]
 #   writes ~/.agents-wiki/config.yml and scaffolds the vault with doctor --repair.
 #   existing config is kept unless --force is provided.
+#   after initialization, runs:
+#     npx skills add https://github.com/webkitvn/agents-wiki --skill
+#   skill sync may prompt for target agents; if it fails, init still succeeds.
+```
+
+### Update
+
+```bash
+agents-wiki update
+#   checks the latest semver tag, asks for confirmation, installs the new
+#   binary into the current binary directory, then runs doctor --repair on the
+#   resolved vault with the updated binary, followed by:
+#     npx skills add https://github.com/webkitvn/agents-wiki --skill
+#   if the binary is already current, update still runs the skill sync step.
+#   skill sync may prompt for target agents; if it fails after binary/repair
+#   work completes, the command prints a warning instead of treating the whole
+#   update as failed.
 ```
 
 ### Inspect

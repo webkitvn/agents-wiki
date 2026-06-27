@@ -3,4 +3,6 @@ pub mod context;
 pub mod health;
 pub mod knowledge;
 pub mod setup;
+pub mod skills;
+pub mod update;
 pub mod util;

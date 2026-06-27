@@ -1,4 +1,4 @@
-use agents_wiki::{args, context::Ctx, health, knowledge, setup};
+use agents_wiki::{args, context::Ctx, health, knowledge, setup, update};
 
 const GUIDE: &str = include_str!("../skills/agents-wiki/GUIDE.md");
 
@@ -47,6 +47,7 @@ fn run() -> Result<i32, String> {
         "search" => knowledge::search(&ctx, rest),
         "lint" => health::lint(&ctx, rest),
         "doctor" => health::doctor(&ctx, rest),
+        "update" => update::update(&ctx, rest),
         "reset" => health::reset(&ctx, rest),
         "log" => knowledge::log(&ctx, rest),
         "open" => knowledge::open(&ctx, rest),
@@ -59,7 +60,7 @@ fn print_help() {
     println!();
     println!("Commands:");
     println!("  guide init status paths next new-source source-summary page review reviews");
-    println!("  search lint doctor log open");
+    println!("  search lint doctor update log open");
     println!("  reset  WARNING: deletes all contents of the resolved vault after confirmation");
 }
 

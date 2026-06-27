@@ -4,6 +4,7 @@ use crate::{
     args::{self, ConfigWriteResult},
     context::Ctx,
     health,
+    skills::warn_if_agents_wiki_skill_sync_fails,
     util::expand_home,
 };
 
@@ -40,6 +41,7 @@ pub fn init(args: &[String]) -> Result<i32, String> {
             println!("  - {item}");
         }
     }
+    warn_if_agents_wiki_skill_sync_fails("agents-wiki init");
     Ok(0)
 }
 

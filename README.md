@@ -43,6 +43,28 @@ Then configure and scaffold your vault location:
 agents-wiki init "$HOME/Documents/agents-wiki"
 ```
 
+After initialization, the CLI also runs:
+
+```bash
+npx skills add https://github.com/webkitvn/agents-wiki --skill
+```
+
+The skill installer may prompt for target agents. If it fails, initialization
+still succeeds and the CLI prints the command to rerun manually.
+
+Update an installed binary from the latest semver tag:
+
+```bash
+agents-wiki update
+```
+
+`update` asks for confirmation before changing anything. After a successful
+binary update, it runs `doctor --repair` on the resolved vault using the updated
+binary, then runs `npx skills add https://github.com/webkitvn/agents-wiki --skill`
+to update the bundled skill. If the binary is already current, `update` still
+runs the skill sync step. If skill sync fails after binary/repair work completes,
+the command prints a warning instead of treating the whole update as failed.
+
 Use `--force` only when you intentionally want to overwrite an existing
 `~/.agents-wiki/config.yml` vault path:
 
