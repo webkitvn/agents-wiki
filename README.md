@@ -93,6 +93,29 @@ Vault resolution precedence:
 3. `~/.agents-wiki/config.yml`
 4. `~/Documents/agents-wiki`
 
+## Obsidian Web Clipper
+
+Use Obsidian Web Clipper as a source capture tool. Clipped markdown should be
+saved into `raw/`, not `wiki/`: `raw/` is the immutable source layer, while
+`wiki/` is the LLM-maintained synthesis layer.
+
+To save new clips directly into `raw/`:
+
+1. Open the Obsidian Web Clipper extension settings.
+2. Open the template you use for captures, usually `Default`.
+3. Set the template's note location / folder to:
+
+```text
+raw
+```
+
+Use the vault-relative folder name `raw`, not `/raw` and not an absolute path.
+For example, if your vault is `~/Documents/agents-wiki`, new clips should land
+in `~/Documents/agents-wiki/raw`.
+
+If the clipper popup still shows `Clippings`, change the popup folder field to
+`raw` before saving the clip.
+
 ## Usage
 
 For the full version-matched command reference:
