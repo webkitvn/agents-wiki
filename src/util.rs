@@ -277,13 +277,20 @@ pub fn source_files(ctx: &Ctx) -> Vec<PathBuf> {
             let Ok(meta) = fs::symlink_metadata(&path) else {
                 continue;
             };
-            if meta.is_file() && path.file_name() != Some(OsStr::new("README.md")) {
+            if meta.is_file() && !is_ignored_raw_sidecar(&path) {
                 files.push(path);
             }
         }
     }
     files.sort();
     files
+}
+
+fn is_ignored_raw_sidecar(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|value| value.to_str()),
+        Some("README.md" | ".DS_Store")
+    )
 }
 
 /// Walk `root` collecting regular files, without following symlinked
@@ -694,6 +701,21 @@ mod tests {
         assert!(resolve_vault_path(&ctx, ".git/config").is_err());
 
         fs::remove_file(outside).unwrap();
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn source_files_ignore_macos_sidecar_files() {
+        let vault = temp_vault("source-files-sidecars");
+        let ctx = Ctx::new(vault.clone());
+        fs::create_dir_all(ctx.raw()).unwrap();
+        let source = ctx.raw().join("source.md");
+        fs::write(&source, "source").unwrap();
+        fs::write(ctx.raw().join(".DS_Store"), "metadata").unwrap();
+
+        let files = source_files(&ctx);
+
+        assert_eq!(files, vec![source]);
         fs::remove_dir_all(vault).unwrap();
     }
 
