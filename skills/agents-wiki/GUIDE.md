@@ -51,6 +51,7 @@ agents-wiki update
 ```bash
 agents-wiki status          # vault path, source/page counts, last 5 log entries
 agents-wiki paths           # absolute paths for raw/, wiki/, index, log, etc.
+agents-wiki paths --json    # paths plus vault resolution_source (cli/env/config/default)
 agents-wiki next [--json]   # raw sources that still have no summary page
 ```
 
@@ -79,6 +80,12 @@ agents-wiki review "Title" --reason "why" [--source "raw/x.md"] [--context "text
 agents-wiki reviews [--status open] [--json]   # list review items
 ```
 
+New scaffolded pages include a short `summary: ""` frontmatter field for cheap
+agent previews and flat provenance fields (`provenance_source_ids`,
+`provenance_has_inferred_content`, `provenance_has_ambiguous_content`). Keep
+`summary` to one or two concise sentences when you activate a page. If a page
+marks ambiguous content, link the relevant review page.
+
 The valid `page` kinds, their target folders, and their `index.md` sections come
 from the `taxonomy:` frontmatter in the vault's `AGENTS.md` (defaults: entity,
 concept, question, review). Edit that list to fit your domain, then run
@@ -101,13 +108,16 @@ agents-wiki lint [--json] [--stale-days N]   # default stale window 90 days
 #   reports: missing index entries, missing citations, duplicate ids,
 #   orphan pages, stale active pages, off-taxonomy pages (pages not under a
 #   taxonomy folder — move them or extend AGENTS.md `taxonomy`), and
-#   taxonomy sections missing from index.md. Exit 1 if any ERROR.
+#   taxonomy sections missing from index.md. It also warns on missing/overlong
+#   summary frontmatter, malformed provenance fields, ambiguous provenance with
+#   no review link, and unreadable .manifest.json. Exit 1 if any ERROR.
 
 agents-wiki doctor [--json] [--repair]
 #   checks vault structure / git / .gitignore / pending sources / reviews.
 #   --repair scaffolds missing dirs and core files (index.md, log.md,
 #   AGENTS.md, "LLM Wiki.md"), adds missing taxonomy section headings to an
-#   existing index.md, inits git when available, and fixes .gitignore.
+#   existing index.md, creates .manifest.json, inits git when available, and
+#   fixes .gitignore.
 ```
 
 Run `agents-wiki init "/path/to/agents-wiki"` once to configure and initialize a new vault.
@@ -129,5 +139,7 @@ until git is installed and initialized.
   (e.g. `--limit abc`) are rejected with an error — they do not silently fall back.
 - `new-source --file` correctly deduplicates binary files (PDFs, images) by
   hashing their raw bytes rather than treating all unreadable files as identical.
+- `.manifest.json` is deterministic bookkeeping for source/page paths and ids;
+  it is not a search index, RAG store, archive lifecycle, or graph database.
 - Build from source: `cargo build --release` (binary at `target/release/agents-wiki`);
   install with `./scripts/install.sh`, then run `agents-wiki init "/path/to/agents-wiki"`.

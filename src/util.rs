@@ -655,6 +655,49 @@ mod tests {
     }
 
     #[test]
+    fn add_index_entry_preserves_nested_targets() {
+        let vault = temp_vault("nested-index-entry");
+        let ctx = Ctx::new(vault.clone());
+        fs::create_dir_all(ctx.wiki()).unwrap();
+        fs::write(ctx.index(), "# Wiki Index\n\n## Concepts\n").unwrap();
+
+        add_index_entry(&ctx, "Concepts", "wiki/concepts/foo/bar.md", "Nested Bar").unwrap();
+
+        let text = read_text(&ctx.index());
+        assert!(text.contains("[[wiki/concepts/foo/bar]]"));
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn resolve_vault_path_accepts_inside_vault_and_rejects_outside_or_git() {
+        let vault = temp_vault("resolve-vault-path");
+        let ctx = Ctx::new(vault.clone());
+        fs::create_dir_all(ctx.raw()).unwrap();
+        fs::create_dir_all(vault.join(".git")).unwrap();
+        let raw = ctx.raw().join("source.md");
+        fs::write(&raw, "source").unwrap();
+        fs::write(vault.join(".git").join("config"), "git").unwrap();
+        let outside = env::temp_dir().join(format!(
+            "agents-wiki-outside-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&outside, "outside").unwrap();
+
+        assert_eq!(
+            resolve_vault_path(&ctx, "raw/source.md").unwrap(),
+            canonical_lossy(&raw)
+        );
+        assert!(resolve_vault_path(&ctx, outside.to_str().unwrap()).is_err());
+        assert!(resolve_vault_path(&ctx, ".git/config").is_err());
+
+        fs::remove_file(outside).unwrap();
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
     fn days_between_handles_ordering_and_invalid_input() {
         assert_eq!(days_between("2026-01-01", "2026-01-31"), Some(30));
         assert_eq!(days_between("2026-03-01", "2026-02-01"), Some(-28));

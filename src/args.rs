@@ -26,7 +26,36 @@ pub enum ConfigWriteResult {
     Kept,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VaultResolutionSource {
+    Cli,
+    Env,
+    Config,
+    Default,
+}
+
+impl VaultResolutionSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Env => "env",
+            Self::Config => "config",
+            Self::Default => "default",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct ResolvedVault {
+    pub path: PathBuf,
+    pub source: VaultResolutionSource,
+}
+
 pub fn parse_global_vault(args: &mut Vec<String>) -> Result<PathBuf, String> {
+    Ok(resolve_global_vault(args)?.path)
+}
+
+pub fn resolve_global_vault(args: &mut Vec<String>) -> Result<ResolvedVault, String> {
     let mut index = 0;
     while index < args.len() {
         if args[index] == "--vault" {
@@ -35,11 +64,17 @@ pub fn parse_global_vault(args: &mut Vec<String>) -> Result<PathBuf, String> {
             }
             let vault = args.remove(index + 1);
             args.remove(index);
-            return Ok(expand_home(&vault));
+            return Ok(ResolvedVault {
+                path: expand_home(&vault),
+                source: VaultResolutionSource::Cli,
+            });
         } else if let Some(value) = args[index].strip_prefix("--vault=") {
             let vault = value.to_string();
             args.remove(index);
-            return Ok(expand_home(&vault));
+            return Ok(ResolvedVault {
+                path: expand_home(&vault),
+                source: VaultResolutionSource::Cli,
+            });
         } else {
             index += 1;
         }
@@ -47,15 +82,24 @@ pub fn parse_global_vault(args: &mut Vec<String>) -> Result<PathBuf, String> {
 
     if let Ok(vault) = env::var("AGENTS_WIKI_VAULT") {
         if !vault.trim().is_empty() {
-            return Ok(expand_home(&vault));
+            return Ok(ResolvedVault {
+                path: expand_home(&vault),
+                source: VaultResolutionSource::Env,
+            });
         }
     }
 
     if let Some(vault) = config_vault_path() {
-        return Ok(expand_home(&vault));
+        return Ok(ResolvedVault {
+            path: expand_home(&vault),
+            source: VaultResolutionSource::Config,
+        });
     }
 
-    Ok(expand_home(DEFAULT_VAULT))
+    Ok(ResolvedVault {
+        path: expand_home(DEFAULT_VAULT),
+        source: VaultResolutionSource::Default,
+    })
 }
 
 fn config_vault_path() -> Option<String> {
@@ -186,14 +230,20 @@ pub fn required_pos(args: &[String], count: usize, usage: &str) -> Result<Vec<St
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_config_vault_path, validate_config_update_at, write_config_vault_path_at,
-        ConfigWriteResult,
+        parse_config_vault_path, resolve_global_vault, validate_config_update_at,
+        write_config_vault_path_at, ConfigWriteResult, VaultResolutionSource,
     };
     use std::{
         env, fs,
         path::PathBuf,
+        sync::{Mutex, OnceLock},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     fn temp_path(name: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -217,6 +267,98 @@ mod tests {
     #[test]
     fn ignores_empty_config_path() {
         assert_eq!(parse_config_vault_path("vault_path: \"\"\n"), None);
+    }
+
+    #[test]
+    fn resolves_cli_vault_flag() {
+        let _guard = env_lock();
+        env::remove_var("AGENTS_WIKI_VAULT");
+        let mut args = vec![
+            "--vault".to_string(),
+            "/tmp/cli-vault".to_string(),
+            "paths".to_string(),
+        ];
+
+        let resolved = resolve_global_vault(&mut args).unwrap();
+
+        assert_eq!(resolved.path, PathBuf::from("/tmp/cli-vault"));
+        assert_eq!(resolved.source, VaultResolutionSource::Cli);
+        assert_eq!(args, vec!["paths".to_string()]);
+    }
+
+    #[test]
+    fn resolves_cli_vault_equals_flag() {
+        let _guard = env_lock();
+        env::remove_var("AGENTS_WIKI_VAULT");
+        let mut args = vec!["--vault=/tmp/cli-vault".to_string(), "paths".to_string()];
+
+        let resolved = resolve_global_vault(&mut args).unwrap();
+
+        assert_eq!(resolved.path, PathBuf::from("/tmp/cli-vault"));
+        assert_eq!(resolved.source, VaultResolutionSource::Cli);
+        assert_eq!(args, vec!["paths".to_string()]);
+    }
+
+    #[test]
+    fn resolves_env_vault() {
+        let _guard = env_lock();
+        env::set_var("AGENTS_WIKI_VAULT", "/tmp/env-vault");
+        let mut args = vec!["paths".to_string()];
+
+        let resolved = resolve_global_vault(&mut args).unwrap();
+
+        assert_eq!(resolved.path, PathBuf::from("/tmp/env-vault"));
+        assert_eq!(resolved.source, VaultResolutionSource::Env);
+        env::remove_var("AGENTS_WIKI_VAULT");
+    }
+
+    #[test]
+    fn resolves_config_vault() {
+        let _guard = env_lock();
+        let old_home = env::var("HOME").ok();
+        let dir = temp_path("config-resolve");
+        fs::create_dir_all(dir.join(".agents-wiki")).unwrap();
+        fs::write(
+            dir.join(".agents-wiki").join("config.yml"),
+            "vault_path: /tmp/config-vault\n",
+        )
+        .unwrap();
+        env::remove_var("AGENTS_WIKI_VAULT");
+        env::set_var("HOME", &dir);
+        let mut args = vec!["paths".to_string()];
+
+        let resolved = resolve_global_vault(&mut args).unwrap();
+
+        assert_eq!(resolved.path, PathBuf::from("/tmp/config-vault"));
+        assert_eq!(resolved.source, VaultResolutionSource::Config);
+        if let Some(home) = old_home {
+            env::set_var("HOME", home);
+        } else {
+            env::remove_var("HOME");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn resolves_default_vault() {
+        let _guard = env_lock();
+        let old_home = env::var("HOME").ok();
+        let dir = temp_path("default-resolve");
+        fs::create_dir_all(&dir).unwrap();
+        env::remove_var("AGENTS_WIKI_VAULT");
+        env::set_var("HOME", &dir);
+        let mut args = vec!["paths".to_string()];
+
+        let resolved = resolve_global_vault(&mut args).unwrap();
+
+        assert_eq!(resolved.path, dir.join("Documents/agents-wiki"));
+        assert_eq!(resolved.source, VaultResolutionSource::Default);
+        if let Some(home) = old_home {
+            env::set_var("HOME", home);
+        } else {
+            env::remove_var("HOME");
+        }
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -12,6 +12,7 @@ use std::{
 use crate::{
     args::has_flag,
     context::{Ctx, Taxonomy, GITIGNORE_RULES},
+    manifest,
     util::{
         append_log, days_between, frontmatter, fs_err, markdown_files, read_text, source_files,
         today,
@@ -265,6 +266,9 @@ pub fn lint_report(ctx: &Ctx, stale_days: i64) -> LintReport {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
     let today_str = today();
+    if let Some(err) = manifest::load_for_lint(ctx) {
+        warnings.push(format!("manifest_unreadable: {err}"));
+    }
     for required in [ctx.raw(), ctx.assets(), ctx.wiki(), ctx.index(), ctx.log()] {
         if !required.exists() {
             errors.push(format!("missing {}", ctx.rel(&required)));
@@ -299,12 +303,43 @@ pub fn lint_report(ctx: &Ctx, stale_days: i64) -> LintReport {
             warnings.push(format!("wiki page missing from index: {rel}"));
         }
         let fields = frontmatter(&page);
+        if !fields.is_empty() {
+            match fields.get("summary") {
+                Some(summary) if frontmatter_value(summary).chars().count() > 200 => {
+                    warnings.push(format!("overlong_summary: {}", ctx.rel(&page)));
+                }
+                Some(_) => {}
+                None => warnings.push(format!("missing_summary: {}", ctx.rel(&page))),
+            }
+            for key in [
+                "provenance_has_inferred_content",
+                "provenance_has_ambiguous_content",
+            ] {
+                if let Some(value) = fields.get(key) {
+                    let value = frontmatter_value(value);
+                    if value != "true" && value != "false" {
+                        warnings.push(format!(
+                            "malformed provenance value `{key}`: {}",
+                            ctx.rel(&page)
+                        ));
+                    }
+                }
+            }
+            if provenance_bool(&fields, "provenance_has_ambiguous_content")
+                && fields.get("type").is_none_or(|value| value != "review")
+                && !text.contains("[[wiki/reviews/")
+            {
+                warnings.push(format!(
+                    "ambiguous provenance without review link: {}",
+                    ctx.rel(&page)
+                ));
+            }
+        }
         if fields.get("status").is_some_and(|value| value == "active")
-            && !text.contains("raw/")
-            && !text.contains("source_id:")
+            && !page_has_evidence(&fields, &text)
         {
-            warnings.push(format!(
-                "active wiki page may lack raw citation: {}",
+            errors.push(format!(
+                "active wiki page lacks evidence: {}",
                 ctx.rel(&page)
             ));
         }
@@ -464,6 +499,41 @@ pub fn lint_report(ctx: &Ctx, stale_days: i64) -> LintReport {
     LintReport { errors, warnings }
 }
 
+fn frontmatter_value(value: &str) -> String {
+    value.trim().trim_matches('"').to_string()
+}
+
+fn provenance_source_ids_has_entries(fields: &BTreeMap<String, String>) -> bool {
+    fields
+        .get("provenance_source_ids")
+        .map(|value| {
+            let value = value.trim().trim_matches(['[', ']']);
+            value
+                .split(',')
+                .map(|item| item.trim().trim_matches('"'))
+                .any(|item| !item.is_empty())
+        })
+        .unwrap_or(false)
+}
+
+fn provenance_bool(fields: &BTreeMap<String, String>, key: &str) -> bool {
+    fields
+        .get(key)
+        .map(|value| frontmatter_value(value) == "true")
+        .unwrap_or(false)
+}
+
+fn page_has_evidence(fields: &BTreeMap<String, String>, text: &str) -> bool {
+    text.contains("raw/")
+        || fields
+            .get("source_id")
+            .is_some_and(|value| !value.trim().is_empty())
+        || fields
+            .get("source_path")
+            .is_some_and(|value| !value.trim().is_empty())
+        || provenance_source_ids_has_entries(fields)
+}
+
 fn build_doctor_report(ctx: &Ctx) -> DoctorReport {
     let mut issues = Vec::new();
     for dir in ctx.required_dirs() {
@@ -481,6 +551,13 @@ fn build_doctor_report(ctx: &Ctx) -> DoctorReport {
         if !file.exists() {
             issues.push(DoctorIssue::error("missing_file", ctx.rel(&file)));
         }
+    }
+    if !ctx.manifest().exists() {
+        issues.push(DoctorIssue::warning_path(
+            "missing_manifest",
+            ".manifest.json",
+            true,
+        ));
     }
 
     let cli_executable = is_cli_executable();
@@ -544,6 +621,9 @@ pub fn repair_doctor(ctx: &Ctx) -> Result<Vec<String>, String> {
         if write_if_missing(&path, content)? {
             repaired.push(format!("Created `{}`.", ctx.rel(&path)));
         }
+    }
+    if manifest::ensure_exists(ctx)? {
+        repaired.push(format!("Created `{}`.", ctx.rel(&ctx.manifest())));
     }
 
     // Repair missing taxonomy sections in an existing index.md.
@@ -736,10 +816,14 @@ to maintain it. You own the wiki; co-evolve this file as the conventions change.
 
 ## Page conventions
 
-- Every page starts with YAML frontmatter (`title`, `created`, `type`, `status`, `tags`)
-  and a single `# H1`.
+- Every page starts with YAML frontmatter (`title`, `summary`, `created`, `type`,
+  `status`, provenance fields, `tags`) and a single `# H1`.
+- Keep `summary` to one or two short sentences so agents can preview pages cheaply.
 - `status: draft` until reviewed; `status: active` once it cites at least one `raw/` source.
-- Active pages must cite their evidence: link the `raw/` path or include its `source_id:`.
+- Active pages must cite their evidence: link the `raw/` path, include its `source_id:`,
+  or list IDs in `provenance_source_ids`.
+- Mark ambiguous synthesized content with `provenance_has_ambiguous_content: true`
+  and link the relevant review page.
 - Cross-link liberally with `[[wikilinks]]`; an orphan page (no inbound links) is flagged by lint.
 
 ## Choosing a kind
@@ -1191,6 +1275,110 @@ mod tests {
             "linked page must not be flagged: {warnings:#?}"
         );
 
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn lint_warns_for_missing_and_overlong_summary() {
+        let vault = temp_vault("summary-lint");
+        let ctx = Ctx::new(vault.clone());
+        repair_doctor(&ctx).unwrap();
+        fs::write(
+            ctx.wiki().join("concepts").join("missing.md"),
+            "---\ntitle: Missing\ncreated: 2026-01-01\ntype: concept\nstatus: draft\ntags: [llm-wiki]\n---\n\n# Missing\n",
+        )
+        .unwrap();
+        fs::write(
+            ctx.wiki().join("concepts").join("long.md"),
+            format!(
+                "---\ntitle: Long\nsummary: \"{}\"\ncreated: 2026-01-01\ntype: concept\nstatus: draft\ntags: [llm-wiki]\n---\n\n# Long\n",
+                "x".repeat(201)
+            ),
+        )
+        .unwrap();
+
+        let report = lint_report(&ctx, DEFAULT_STALE_DAYS);
+
+        assert!(report
+            .warnings
+            .iter()
+            .any(|item| item == "missing_summary: wiki/concepts/missing.md"));
+        assert!(report
+            .warnings
+            .iter()
+            .any(|item| item == "overlong_summary: wiki/concepts/long.md"));
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn lint_errors_for_active_page_without_evidence() {
+        let vault = temp_vault("active-evidence");
+        let ctx = Ctx::new(vault.clone());
+        repair_doctor(&ctx).unwrap();
+        fs::write(
+            ctx.wiki().join("concepts").join("active.md"),
+            "---\ntitle: Active\nsummary: \"ok\"\ncreated: 2026-01-01\ntype: concept\nstatus: active\nprovenance_source_ids: []\ntags: [llm-wiki]\n---\n\n# Active\n",
+        )
+        .unwrap();
+
+        let report = lint_report(&ctx, DEFAULT_STALE_DAYS);
+
+        assert!(report
+            .errors
+            .iter()
+            .any(|item| item == "active wiki page lacks evidence: wiki/concepts/active.md"));
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn lint_warns_for_malformed_and_unreviewed_ambiguous_provenance() {
+        let vault = temp_vault("provenance-lint");
+        let ctx = Ctx::new(vault.clone());
+        repair_doctor(&ctx).unwrap();
+        fs::write(
+            ctx.wiki().join("concepts").join("ambiguous.md"),
+            "---\ntitle: Ambiguous\nsummary: \"ok\"\ncreated: 2026-01-01\ntype: concept\nstatus: draft\nprovenance_source_ids: []\nprovenance_has_inferred_content: maybe\nprovenance_has_ambiguous_content: true\ntags: [llm-wiki]\n---\n\n# Ambiguous\n",
+        )
+        .unwrap();
+
+        let report = lint_report(&ctx, DEFAULT_STALE_DAYS);
+
+        assert!(report.warnings.iter().any(|item| {
+            item == "malformed provenance value `provenance_has_inferred_content`: wiki/concepts/ambiguous.md"
+        }));
+        assert!(report.warnings.iter().any(|item| {
+            item == "ambiguous provenance without review link: wiki/concepts/ambiguous.md"
+        }));
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn lint_warns_for_corrupt_manifest() {
+        let vault = temp_vault("manifest-lint");
+        let ctx = Ctx::new(vault.clone());
+        repair_doctor(&ctx).unwrap();
+        fs::write(ctx.manifest(), "{").unwrap();
+
+        let report = lint_report(&ctx, DEFAULT_STALE_DAYS);
+
+        assert!(report
+            .warnings
+            .iter()
+            .any(|item| item.starts_with("manifest_unreadable: failed to parse .manifest.json")));
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn repair_doctor_creates_manifest() {
+        let vault = temp_vault("repair-manifest");
+        let ctx = Ctx::new(vault.clone());
+
+        let repaired = repair_doctor(&ctx).unwrap();
+
+        assert!(ctx.manifest().exists());
+        assert!(repaired
+            .iter()
+            .any(|item| item == "Created `.manifest.json`."));
         fs::remove_dir_all(vault).unwrap();
     }
 

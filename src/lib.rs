@@ -2,6 +2,7 @@ pub mod args;
 pub mod context;
 pub mod health;
 pub mod knowledge;
+pub mod manifest;
 pub mod setup;
 pub mod skills;
 pub mod update;

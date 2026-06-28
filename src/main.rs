@@ -21,8 +21,8 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     }
 
-    let vault = args::parse_global_vault(&mut argv)?;
-    let ctx = Ctx::new(vault);
+    let resolved_vault = args::resolve_global_vault(&mut argv)?;
+    let ctx = Ctx::new_with_resolution_source(resolved_vault.path, resolved_vault.source.as_str());
 
     let Some(command) = argv.first().cloned() else {
         print_help();
@@ -37,7 +37,7 @@ fn run() -> Result<i32, String> {
         }
         "init" => setup::init(rest),
         "status" => knowledge::status(&ctx),
-        "paths" => knowledge::paths(&ctx),
+        "paths" => knowledge::paths(&ctx, rest),
         "next" => knowledge::next(&ctx, rest),
         "new-source" => knowledge::new_source(&ctx, rest),
         "source-summary" => knowledge::source_summary(&ctx, rest),

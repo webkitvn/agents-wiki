@@ -146,6 +146,7 @@ use std::sync::OnceLock;
 
 pub struct Ctx {
     pub vault: PathBuf,
+    pub resolution_source: String,
     pub taxonomy: Taxonomy,
     vault_canonical: OnceLock<PathBuf>,
 }
@@ -154,6 +155,7 @@ impl Clone for Ctx {
     fn clone(&self) -> Self {
         Self {
             vault: self.vault.clone(),
+            resolution_source: self.resolution_source.clone(),
             taxonomy: self.taxonomy.clone(),
             vault_canonical: OnceLock::new(),
         }
@@ -162,9 +164,17 @@ impl Clone for Ctx {
 
 impl Ctx {
     pub fn new(vault: PathBuf) -> Self {
+        Self::new_with_resolution_source(vault, "default")
+    }
+
+    pub fn new_with_resolution_source(
+        vault: PathBuf,
+        resolution_source: impl Into<String>,
+    ) -> Self {
         let taxonomy = Taxonomy::load(&vault);
         Self {
             vault,
+            resolution_source: resolution_source.into(),
             taxonomy,
             vault_canonical: OnceLock::new(),
         }
@@ -205,6 +215,10 @@ impl Ctx {
 
     pub fn gitignore(&self) -> PathBuf {
         self.vault.join(".gitignore")
+    }
+
+    pub fn manifest(&self) -> PathBuf {
+        self.vault.join(".manifest.json")
     }
 
     pub fn required_dirs(&self) -> Vec<PathBuf> {

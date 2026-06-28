@@ -10,10 +10,12 @@ use crate::{
     args::{has_flag, opt_value, required_pos},
     context::Ctx,
     health::{parse_usize_opt, validate_flags},
+    manifest::Manifest,
     util::{
         add_index_entry, append_log, canonical_id_for_existing, canonical_id_for_file,
-        canonical_id_for_new, markdown_files, page_path, read_text, resolve_vault_path, slugify,
-        source_files, source_id_for, source_records, today, validate_open_path, write_new,
+        canonical_id_for_new, canonical_lossy, markdown_files, page_path, read_text,
+        resolve_vault_path, slugify, source_files, source_id_for, source_records, today,
+        validate_open_path, write_new,
     },
 };
 
@@ -51,7 +53,25 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
     Ok(0)
 }
 
-pub fn paths(ctx: &Ctx) -> Result<i32, String> {
+pub fn paths(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
+    validate_flags(args, &["--json"])?;
+    if has_flag(args, "--json") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "vault": ctx.vault.display().to_string(),
+                "resolution_source": ctx.resolution_source,
+                "config_path": crate::args::config_path().display().to_string(),
+                "raw": ctx.raw().display().to_string(),
+                "assets": ctx.assets().display().to_string(),
+                "wiki": ctx.wiki().display().to_string(),
+                "index": ctx.index().display().to_string(),
+                "log": ctx.log().display().to_string(),
+            }))
+            .map_err(|err| err.to_string())?
+        );
+        return Ok(0);
+    }
     println!("vault={}", ctx.vault.display());
     println!("raw={}", ctx.raw().display());
     println!("assets={}", ctx.assets().display());
@@ -141,6 +161,7 @@ pub fn new_source(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
             return Ok(2);
         }
     }
+    let mut manifest = Manifest::load(ctx)?;
 
     let dest = if let Some(file) = &file {
         let src = crate::util::expand_home(file);
@@ -172,6 +193,8 @@ pub fn new_source(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
 
     let source_id = source_id_for(ctx, &dest);
     let canonical_id = canonical_id_for_existing(&dest);
+    manifest.record_source(ctx, &source_id, &dest, &canonical_id, None);
+    manifest.save(ctx)?;
     append_log(
         ctx,
         "source",
@@ -195,7 +218,7 @@ pub fn source_summary(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
     if !raw.is_file() {
         return Err(format!("raw source not found: {}", raw.display()));
     }
-    if !raw.starts_with(ctx.raw()) {
+    if !raw.starts_with(canonical_lossy(&ctx.raw())) {
         return Err(format!("source must be under raw/: {}", raw.display()));
     }
     let title = opt_value(args, "--title")
@@ -203,8 +226,9 @@ pub fn source_summary(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
     let source_id = source_id_for(ctx, &raw);
     let canonical_id = canonical_id_for_existing(&raw);
     let path = page_path(ctx, "source", &title)?;
+    let mut manifest = Manifest::load(ctx)?;
     let content = format!(
-        "---\ntitle: {title}\ncreated: {}\ntype: source-summary\nsource_path: {}\nsource_id: {source_id}\ncanonical_id: {canonical_id}\nstatus: draft\ntags: [llm-wiki, source]\n---\n\n# {title}\n\n## Summary\n\n## Key Claims\n\n- [ ] Cite `{}`.\n\n## Links\n\n## Follow-Up\n",
+        "---\ntitle: {title}\nsummary: \"\"\ncreated: {}\ntype: source-summary\nsource_path: {}\nsource_id: {source_id}\ncanonical_id: {canonical_id}\nstatus: draft\nprovenance_source_ids: [{source_id}]\nprovenance_has_inferred_content: false\nprovenance_has_ambiguous_content: false\ntags: [llm-wiki, source]\n---\n\n# {title}\n\n## Summary\n\n## Key Claims\n\n- [ ] Cite `{}`.\n\n## Links\n\n## Follow-Up\n",
         today(),
         ctx.rel(&raw),
         ctx.rel(&raw)
@@ -226,6 +250,9 @@ pub fn source_summary(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
             ctx.rel(&raw)
         )],
     )?;
+    manifest.record_source(ctx, &source_id, &raw, &canonical_id, Some(&path));
+    manifest.record_page(ctx, &path, "source-summary", &title, vec![source_id]);
+    manifest.save(ctx)?;
     Ok(0)
 }
 
@@ -249,8 +276,9 @@ pub fn page(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
     };
     let section = page_kind.section.clone();
     let path = page_path(ctx, kind, title)?;
+    let mut manifest = Manifest::load(ctx)?;
     let content = format!(
-        "---\ntitle: {title}\ncreated: {}\ntype: {kind}\nstatus: draft\nsource_count: 0\ntags: [llm-wiki]\n---\n\n# {title}\n\n## Summary\n\n## Evidence\n\n## Links\n",
+        "---\ntitle: {title}\nsummary: \"\"\ncreated: {}\ntype: {kind}\nstatus: draft\nsource_count: 0\nprovenance_source_ids: []\nprovenance_has_inferred_content: false\nprovenance_has_ambiguous_content: false\ntags: [llm-wiki]\n---\n\n# {title}\n\n## Summary\n\n## Evidence\n\n## Links\n",
         today()
     );
     write_new(ctx, &path, &content)?;
@@ -261,6 +289,8 @@ pub fn page(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
         title,
         &[format!("Created `{}`.", ctx.rel(&path))],
     )?;
+    manifest.record_page(ctx, &path, kind, title, Vec::new());
+    manifest.save(ctx)?;
     Ok(0)
 }
 
@@ -276,9 +306,10 @@ pub fn review(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
     let source = opt_value(args, "--source").unwrap_or_default();
     let context = opt_value(args, "--context").unwrap_or_default();
     let path = page_path(ctx, "review", title)?;
+    let mut manifest = Manifest::load(ctx)?;
     let source_text = if source.is_empty() { "TBD" } else { &source };
     let content = format!(
-        "---\ntitle: {title}\ncreated: {}\ntype: review\nstatus: open\nreason: {reason}\nsource_path: {source}\ntags: [llm-wiki, review]\n---\n\n# {title}\n\n## Reason\n\n{reason}\n\n## Source\n\n- {source_text}\n\n## Context\n\n{context}\n\n## Decision\n",
+        "---\ntitle: {title}\nsummary: \"\"\ncreated: {}\ntype: review\nstatus: open\nreason: {reason}\nsource_path: {source}\nprovenance_source_ids: []\nprovenance_has_inferred_content: false\nprovenance_has_ambiguous_content: false\ntags: [llm-wiki, review]\n---\n\n# {title}\n\n## Reason\n\n{reason}\n\n## Source\n\n- {source_text}\n\n## Context\n\n{context}\n\n## Decision\n",
         today()
     );
     write_new(ctx, &path, &content)?;
@@ -294,6 +325,8 @@ pub fn review(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
             format!("Reason: {reason}."),
         ],
     )?;
+    manifest.record_page(ctx, &path, "review", title, Vec::new());
+    manifest.save(ctx)?;
     Ok(0)
 }
 
@@ -459,6 +492,10 @@ mod tests {
         env::temp_dir().join(format!("agents-wiki-{name}-{nonce}"))
     }
 
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
     #[test]
     fn search_returns_all_matches_and_respects_limit() {
         let vault = temp_vault("search-matches");
@@ -476,6 +513,91 @@ mod tests {
         let limited = search_matches(&ctx, "alpha", 2);
         assert_eq!(limited.len(), 2, "limit should cap matches: {limited:#?}");
 
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn page_scaffold_includes_summary_provenance_and_manifest_record() {
+        let vault = temp_vault("page-manifest");
+        let ctx = Ctx::new(vault.clone());
+
+        page(&ctx, &args(&["concept", "Test Concept"])).unwrap();
+
+        let path = ctx.wiki().join("concepts/test-concept.md");
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("summary: \"\""));
+        assert!(text.contains("provenance_source_ids: []"));
+        let manifest = Manifest::load(&ctx).unwrap();
+        assert_eq!(
+            manifest.pages["wiki/concepts/test-concept.md"].page_type,
+            "concept"
+        );
+        assert!(manifest.pages["wiki/concepts/test-concept.md"]
+            .source_ids
+            .is_empty());
+
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn new_source_records_manifest_source() {
+        let vault = temp_vault("source-manifest");
+        let ctx = Ctx::new(vault.clone());
+
+        new_source(&ctx, &args(&["Source Title", "--note", "body"])).unwrap();
+
+        let manifest = Manifest::load(&ctx).unwrap();
+        assert_eq!(manifest.sources.len(), 1);
+        let source = manifest.sources.values().next().unwrap();
+        assert!(source.raw_path.starts_with("raw/"));
+        assert!(source.summary_path.is_none());
+
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn source_summary_records_manifest_source_and_page() {
+        let vault = temp_vault("summary-manifest");
+        let ctx = Ctx::new(vault.clone());
+        fs::create_dir_all(ctx.raw()).unwrap();
+        let raw = ctx.raw().join("sample.md");
+        fs::write(
+            &raw,
+            "---\nsource_id: src-sample\ncanonical_id: can-sample\n---\n\n# Sample\n",
+        )
+        .unwrap();
+
+        source_summary(&ctx, &args(&["raw/sample.md", "--title", "Sample"])).unwrap();
+
+        let page = ctx.wiki().join("sources/sample.md");
+        let text = fs::read_to_string(&page).unwrap();
+        assert!(text.contains("summary: \"\""));
+        assert!(text.contains("provenance_source_ids: [src-"));
+        let manifest = Manifest::load(&ctx).unwrap();
+        let source = manifest.sources.values().next().unwrap();
+        assert_eq!(
+            source.summary_path.as_deref(),
+            Some("wiki/sources/sample.md")
+        );
+        assert_eq!(
+            manifest.pages["wiki/sources/sample.md"].page_type,
+            "source-summary"
+        );
+
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    #[test]
+    fn mutating_commands_refuse_corrupt_manifest() {
+        let vault = temp_vault("corrupt-manifest-command");
+        let ctx = Ctx::new(vault.clone());
+        fs::create_dir_all(&vault).unwrap();
+        fs::write(ctx.manifest(), "{").unwrap();
+
+        let err = page(&ctx, &args(&["concept", "Blocked"])).unwrap_err();
+
+        assert!(err.contains("failed to parse .manifest.json"));
+        assert!(!ctx.wiki().join("concepts/blocked.md").exists());
         fs::remove_dir_all(vault).unwrap();
     }
 }
