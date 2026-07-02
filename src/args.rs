@@ -1,12 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    env, fs,
+    env,
+    ffi::OsString,
+    fs,
     path::{Path, PathBuf},
 };
 
 use crate::{
-    context::{CONFIG_PATH, DEFAULT_VAULT},
-    util::expand_home,
+    context::DEFAULT_VAULT,
+    util::{expand_home, home_dir},
 };
 
 #[derive(Debug, Deserialize)]
@@ -103,7 +105,7 @@ pub fn resolve_global_vault(args: &mut Vec<String>) -> Result<ResolvedVault, Str
 }
 
 fn config_vault_path() -> Option<String> {
-    let path = config_path();
+    let path = config_read_path();
     let text = fs::read_to_string(path).ok()?;
     parse_config_vault_path(&text)
 }
@@ -114,15 +116,64 @@ fn parse_config_vault_path(text: &str) -> Option<String> {
 }
 
 pub fn config_path() -> PathBuf {
-    expand_home(CONFIG_PATH)
+    config_path_for(cfg!(windows), |name| env::var_os(name))
+}
+
+fn config_path_for<F>(is_windows: bool, var: F) -> PathBuf
+where
+    F: Fn(&str) -> Option<OsString>,
+{
+    if is_windows {
+        if let Some(appdata) = var("APPDATA") {
+            return PathBuf::from(appdata)
+                .join("agents-wiki")
+                .join("config.yml");
+        }
+        if let Some(userprofile) = var("USERPROFILE") {
+            return PathBuf::from(userprofile)
+                .join(".agents-wiki")
+                .join("config.yml");
+        }
+    }
+    let home = var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".agents-wiki").join("config.yml")
+}
+
+fn legacy_config_path() -> PathBuf {
+    home_dir().join(".agents-wiki").join("config.yml")
+}
+
+fn config_read_path() -> PathBuf {
+    let primary = config_path();
+    let legacy = legacy_config_path();
+    select_config_read_path(cfg!(windows), primary, legacy)
+}
+
+fn select_config_read_path(is_windows: bool, primary: PathBuf, legacy: PathBuf) -> PathBuf {
+    if is_windows && !primary.exists() && legacy.exists() {
+        legacy
+    } else {
+        primary
+    }
 }
 
 pub fn validate_config_update(vault: &Path, force: bool) -> Result<(), String> {
+    ensure_config_write_path_available()?;
     validate_config_update_at(&config_path(), vault, force)
 }
 
 pub fn write_config_vault_path(vault: &Path, force: bool) -> Result<ConfigWriteResult, String> {
+    ensure_config_write_path_available()?;
     write_config_vault_path_at(&config_path(), vault, force)
+}
+
+fn ensure_config_write_path_available() -> Result<(), String> {
+    if cfg!(windows) && env::var_os("APPDATA").is_none() {
+        return Err("APPDATA is required to write the Windows agents-wiki config path".to_string());
+    }
+    Ok(())
 }
 
 fn validate_config_update_at(config_file: &Path, vault: &Path, force: bool) -> Result<(), String> {
@@ -230,11 +281,14 @@ pub fn required_pos(args: &[String], count: usize, usage: &str) -> Result<Vec<St
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_config_vault_path, resolve_global_vault, validate_config_update_at,
-        write_config_vault_path_at, ConfigWriteResult, VaultResolutionSource,
+        config_path_for, parse_config_vault_path, resolve_global_vault, select_config_read_path,
+        validate_config_update, validate_config_update_at, write_config_vault_path_at,
+        ConfigWriteResult, VaultResolutionSource,
     };
     use std::{
-        env, fs,
+        env,
+        ffi::OsString,
+        fs,
         path::PathBuf,
         sync::{Mutex, OnceLock},
         time::{SystemTime, UNIX_EPOCH},
@@ -267,6 +321,67 @@ mod tests {
     #[test]
     fn ignores_empty_config_path() {
         assert_eq!(parse_config_vault_path("vault_path: \"\"\n"), None);
+    }
+
+    #[test]
+    fn windows_config_path_prefers_appdata() {
+        let path = config_path_for(true, |name| match name {
+            "APPDATA" => Some(OsString::from("C:\\Users\\Agent\\AppData\\Roaming")),
+            "USERPROFILE" => Some(OsString::from("C:\\Users\\Agent")),
+            _ => None,
+        });
+
+        assert_eq!(
+            path,
+            PathBuf::from("C:\\Users\\Agent\\AppData\\Roaming")
+                .join("agents-wiki")
+                .join("config.yml")
+        );
+    }
+
+    #[test]
+    fn unix_config_path_uses_home() {
+        let path = config_path_for(false, |name| {
+            (name == "HOME").then(|| OsString::from("/home/agent"))
+        });
+
+        assert_eq!(
+            path,
+            PathBuf::from("/home/agent")
+                .join(".agents-wiki")
+                .join("config.yml")
+        );
+    }
+
+    #[test]
+    fn windows_config_read_falls_back_to_legacy_when_primary_is_missing() {
+        let dir = temp_path("config-fallback");
+        let primary = dir.join("AppData").join("agents-wiki").join("config.yml");
+        let legacy = dir.join(".agents-wiki").join("config.yml");
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, "vault_path: /tmp/legacy\n").unwrap();
+
+        let selected = select_config_read_path(true, primary.clone(), legacy.clone());
+
+        assert_eq!(selected, legacy);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn windows_config_write_requires_appdata() {
+        if !cfg!(windows) {
+            return;
+        }
+        let _guard = env_lock();
+        let old_appdata = env::var("APPDATA").ok();
+        env::remove_var("APPDATA");
+
+        let result = validate_config_update(&PathBuf::from("C:\\vault"), false);
+
+        assert!(result.unwrap_err().contains("APPDATA"));
+        if let Some(appdata) = old_appdata {
+            env::set_var("APPDATA", appdata);
+        }
     }
 
     #[test]
@@ -316,15 +431,23 @@ mod tests {
     fn resolves_config_vault() {
         let _guard = env_lock();
         let old_home = env::var("HOME").ok();
+        let old_appdata = env::var("APPDATA").ok();
+        let old_userprofile = env::var("USERPROFILE").ok();
         let dir = temp_path("config-resolve");
-        fs::create_dir_all(dir.join(".agents-wiki")).unwrap();
-        fs::write(
-            dir.join(".agents-wiki").join("config.yml"),
-            "vault_path: /tmp/config-vault\n",
-        )
-        .unwrap();
+        let config = if cfg!(windows) {
+            dir.join("AppData")
+                .join("Roaming")
+                .join("agents-wiki")
+                .join("config.yml")
+        } else {
+            dir.join(".agents-wiki").join("config.yml")
+        };
+        fs::create_dir_all(config.parent().unwrap()).unwrap();
+        fs::write(&config, "vault_path: /tmp/config-vault\n").unwrap();
         env::remove_var("AGENTS_WIKI_VAULT");
         env::set_var("HOME", &dir);
+        env::set_var("USERPROFILE", &dir);
+        env::set_var("APPDATA", dir.join("AppData").join("Roaming"));
         let mut args = vec!["paths".to_string()];
 
         let resolved = resolve_global_vault(&mut args).unwrap();
@@ -336,6 +459,16 @@ mod tests {
         } else {
             env::remove_var("HOME");
         }
+        if let Some(appdata) = old_appdata {
+            env::set_var("APPDATA", appdata);
+        } else {
+            env::remove_var("APPDATA");
+        }
+        if let Some(userprofile) = old_userprofile {
+            env::set_var("USERPROFILE", userprofile);
+        } else {
+            env::remove_var("USERPROFILE");
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -343,10 +476,14 @@ mod tests {
     fn resolves_default_vault() {
         let _guard = env_lock();
         let old_home = env::var("HOME").ok();
+        let old_appdata = env::var("APPDATA").ok();
+        let old_userprofile = env::var("USERPROFILE").ok();
         let dir = temp_path("default-resolve");
         fs::create_dir_all(&dir).unwrap();
         env::remove_var("AGENTS_WIKI_VAULT");
         env::set_var("HOME", &dir);
+        env::set_var("USERPROFILE", &dir);
+        env::set_var("APPDATA", dir.join("AppData").join("Roaming"));
         let mut args = vec!["paths".to_string()];
 
         let resolved = resolve_global_vault(&mut args).unwrap();
@@ -357,6 +494,16 @@ mod tests {
             env::set_var("HOME", home);
         } else {
             env::remove_var("HOME");
+        }
+        if let Some(appdata) = old_appdata {
+            env::set_var("APPDATA", appdata);
+        } else {
+            env::remove_var("APPDATA");
+        }
+        if let Some(userprofile) = old_userprofile {
+            env::set_var("USERPROFILE", userprofile);
+        } else {
+            env::remove_var("USERPROFILE");
         }
         fs::remove_dir_all(dir).unwrap();
     }

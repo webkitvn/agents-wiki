@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashSet},
     env,
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fs,
     io::{BufRead, Write},
     path::{Path, PathBuf},
@@ -41,12 +41,38 @@ fn civil_date(z: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+pub fn home_dir() -> PathBuf {
+    home_dir_with(cfg!(windows), |name| env::var_os(name))
+}
+
+fn home_dir_with<F>(is_windows: bool, var: F) -> PathBuf
+where
+    F: Fn(&str) -> Option<OsString>,
+{
+    let key = if is_windows { "USERPROFILE" } else { "HOME" };
+    var(key)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 pub fn expand_home(input: &str) -> PathBuf {
+    expand_home_with(input, cfg!(windows), |name| env::var_os(name))
+}
+
+fn expand_home_with<F>(input: &str, is_windows: bool, var: F) -> PathBuf
+where
+    F: Fn(&str) -> Option<OsString>,
+{
     if input == "~" {
-        return PathBuf::from(env::var("HOME").unwrap_or_else(|_| ".".to_string()));
+        return home_dir_with(is_windows, var);
     }
     if let Some(rest) = input.strip_prefix("~/") {
-        return PathBuf::from(env::var("HOME").unwrap_or_else(|_| ".".to_string())).join(rest);
+        return home_dir_with(is_windows, var).join(rest);
+    }
+    if is_windows {
+        if let Some(rest) = input.strip_prefix("~\\") {
+            return home_dir_with(is_windows, var).join(rest);
+        }
     }
     PathBuf::from(input)
 }
@@ -582,6 +608,7 @@ impl SummaryIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_vault(name: &str) -> PathBuf {
@@ -590,6 +617,39 @@ mod tests {
             .unwrap()
             .as_nanos();
         env::temp_dir().join(format!("agents-wiki-{name}-{nonce}"))
+    }
+
+    #[test]
+    fn expand_home_uses_windows_userprofile_when_requested() {
+        let expanded = expand_home_with("~/Documents/agents-wiki", true, |name| {
+            (name == "USERPROFILE").then(|| OsString::from("C:\\Users\\Agent"))
+        });
+
+        assert_eq!(
+            expanded,
+            PathBuf::from("C:\\Users\\Agent").join("Documents/agents-wiki")
+        );
+    }
+
+    #[test]
+    fn expand_home_accepts_windows_separator_after_tilde() {
+        let expanded = expand_home_with("~\\Documents\\agents-wiki", true, |name| {
+            (name == "USERPROFILE").then(|| OsString::from("C:\\Users\\Agent"))
+        });
+
+        assert_eq!(
+            expanded,
+            PathBuf::from("C:\\Users\\Agent").join("Documents\\agents-wiki")
+        );
+    }
+
+    #[test]
+    fn expand_home_uses_unix_home_when_requested() {
+        let expanded = expand_home_with("~/Documents/agents-wiki", false, |name| {
+            (name == "HOME").then(|| OsString::from("/home/agent"))
+        });
+
+        assert_eq!(expanded, PathBuf::from("/home/agent/Documents/agents-wiki"));
     }
 
     #[test]

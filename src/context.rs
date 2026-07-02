@@ -233,13 +233,19 @@ impl Ctx {
 
     pub fn rel(&self, path: &Path) -> String {
         let abs = canonical_lossy(path);
-        abs.strip_prefix(self.vault_canonical())
+        let value = abs
+            .strip_prefix(self.vault_canonical())
             .ok()
             .and_then(|p| p.to_str())
             .unwrap_or_else(|| path.to_str().unwrap_or(""))
-            .trim_start_matches('/')
-            .to_string()
+            .trim_start_matches(&['/', '\\'][..])
+            .to_string();
+        normalize_rel_path(&value)
     }
+}
+
+fn normalize_rel_path(value: &str) -> String {
+    value.replace('\\', "/")
 }
 
 #[cfg(test)]
@@ -306,5 +312,13 @@ mod tests {
         let text = "---\ntaxonomy:\n  - kind: bad\n    folder: .git/hooks\n    section: Bad\n---\n\n# Schema\n";
         // from_agents_text returns None when all entries are dropped
         assert_eq!(Taxonomy::from_agents_text(text), None);
+    }
+
+    #[test]
+    fn normalizes_relative_paths_for_markdown_and_manifest_output() {
+        assert_eq!(
+            normalize_rel_path("wiki\\sources\\example.md"),
+            "wiki/sources/example.md"
+        );
     }
 }

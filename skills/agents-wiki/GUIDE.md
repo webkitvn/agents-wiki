@@ -128,10 +128,18 @@ Use the printed raw path for `source-summary`; do not reconstruct temp paths by 
 not overwrite an existing vault contract.
 
 `agents-wiki doctor --repair` also creates `GEMINI.md` and `CLAUDE.md` aliases when
-they are missing. On Unix-like systems these aliases are relative symlinks to
-`AGENTS.md`. If symlinks are unavailable, the CLI creates a small pointer file that
-directs agents to `AGENTS.md`. Existing custom `GEMINI.md` or `CLAUDE.md` files are
-not overwritten.
+they are missing.
+<!-- agents-wiki:os:unix:start -->
+On Unix-like systems these aliases are relative symlinks to `AGENTS.md`. If
+symlinks are unavailable, the CLI creates a small pointer file that directs
+agents to `AGENTS.md`.
+<!-- agents-wiki:os:unix:end -->
+<!-- agents-wiki:os:windows:start -->
+On Windows, these aliases use Windows file symlinks when available. If symlinks
+are unavailable, the CLI creates a small pointer file that directs agents to
+`AGENTS.md`.
+<!-- agents-wiki:os:windows:end -->
+Existing custom `GEMINI.md` or `CLAUDE.md` files are not overwritten.
 
 If an existing vault lacks the English wiki language policy:
 
@@ -150,10 +158,19 @@ If an existing vault lacks the English wiki language policy:
 
 `--vault PATH` overrides the vault for any command. Resolution precedence:
 
+<!-- agents-wiki:os:unix:start -->
 1. `--vault PATH`
 2. `AGENTS_WIKI_VAULT` env var
 3. `~/.agents-wiki/config.yml` (`vault_path: "..."`)
 4. `~/Documents/agents-wiki`
+<!-- agents-wiki:os:unix:end -->
+<!-- agents-wiki:os:windows:start -->
+1. `--vault PATH`
+2. `AGENTS_WIKI_VAULT` env var
+3. `%APPDATA%\agents-wiki\config.yml` (`vault_path: "..."`)
+4. Legacy fallback `%USERPROFILE%\.agents-wiki\config.yml` only when the primary config is missing
+5. `%USERPROFILE%\Documents\agents-wiki`
+<!-- agents-wiki:os:windows:end -->
 
 Many read commands accept `--json` for machine-readable output.
 
@@ -165,16 +182,28 @@ Many read commands accept `--json` for machine-readable output.
 agents-wiki guide
 ```
 
-Prints this embedded AI operating guide.
+Prints this embedded AI operating guide for the current OS. Use
+`agents-wiki guide --os windows` or `agents-wiki guide --os unix` only when
+testing or preparing instructions for another OS.
 
 ### Initialize
 
+<!-- agents-wiki:os:unix:start -->
 ```bash
 agents-wiki init "/path/to/agents-wiki" [--force]
 ```
 
 Creates or keeps `~/.agents-wiki/config.yml`, runs `doctor --repair`, and then
 runs:
+<!-- agents-wiki:os:unix:end -->
+<!-- agents-wiki:os:windows:start -->
+```powershell
+agents-wiki init "$env:USERPROFILE\Documents\agents-wiki" [--force]
+```
+
+Creates or keeps `%APPDATA%\agents-wiki\config.yml`, runs `doctor --repair`, and then
+runs:
+<!-- agents-wiki:os:windows:end -->
 
 ```bash
 npx skills add https://github.com/webkitvn/agents-wiki --skill
@@ -189,15 +218,24 @@ Skill sync may prompt for target agents. If skill sync fails, `init` still succe
 agents-wiki update
 ```
 
+<!-- agents-wiki:os:unix:start -->
 Checks the latest semver tag, asks for confirmation, installs the new binary into
 the current binary directory, runs `doctor --repair` on the resolved vault, and
 syncs the skill with:
+<!-- agents-wiki:os:unix:end -->
+<!-- agents-wiki:os:windows:start -->
+Checks the latest semver tag and prints a PowerShell-safe `cargo install` command.
+Windows does not overwrite the running `agents-wiki.exe` in place. After running
+the printed update command, run `agents-wiki doctor --repair` on the vault.
+<!-- agents-wiki:os:windows:end -->
 
+<!-- agents-wiki:os:unix:start -->
 ```bash
 npx skills add https://github.com/webkitvn/agents-wiki --skill
 ```
 
 If the binary is already current, `update` still runs the skill sync step.
+<!-- agents-wiki:os:unix:end -->
 
 ### Inspect
 
@@ -306,6 +344,13 @@ compatibility aliases, adds missing taxonomy section headings, creates
 
 ## Build And Install
 
+<!-- agents-wiki:os:unix:start -->
+```bash
+cargo install --git https://github.com/webkitvn/agents-wiki.git --locked --force
+```
+
+For checkout-local installs:
+
 ```bash
 cargo build --release
 ./scripts/install.sh
@@ -314,3 +359,20 @@ agents-wiki init "/path/to/agents-wiki"
 
 The release binary is written to `target/release/agents-wiki`. The installer copies
 it to the configured binary directory, usually `~/.local/bin`.
+<!-- agents-wiki:os:unix:end -->
+<!-- agents-wiki:os:windows:start -->
+```powershell
+cargo install --git https://github.com/webkitvn/agents-wiki.git --locked --force
+```
+
+For checkout-local installs:
+
+```powershell
+cargo build --release
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+agents-wiki init "$env:USERPROFILE\Documents\agents-wiki"
+```
+
+The release binary is written to `target\release\agents-wiki.exe`. The installer copies
+it to the configured binary directory, usually `%USERPROFILE%\.local\bin`.
+<!-- agents-wiki:os:windows:end -->

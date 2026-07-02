@@ -60,7 +60,7 @@ done
 
 mkdir -p "${bin_dir}"
 
-cargo build --release --manifest-path "${repo_root}/Cargo.toml"
+cargo build --release --locked --manifest-path "${repo_root}/Cargo.toml"
 rm -f "${bin_dir}/agents-wiki"
 cp "${repo_root}/target/release/agents-wiki" "${bin_dir}/agents-wiki"
 chmod +x "${bin_dir}/agents-wiki"

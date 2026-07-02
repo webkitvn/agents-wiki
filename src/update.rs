@@ -47,11 +47,16 @@ pub fn update(ctx: &Ctx, args: &[String]) -> Result<i32, String> {
         .ok_or_else(|| "current package version is not a valid semver version".to_string())?;
     let latest = latest_release_tag(REPO_URL)?;
     let install_dir = current_exe_dir()?;
-    let install_path = install_dir.join("agents-wiki");
+    let install_path = install_dir.join(binary_name());
 
     if latest.version <= current {
         println!("agents-wiki is up to date ({})", env!("CARGO_PKG_VERSION"));
         warn_if_agents_wiki_skill_sync_fails("agents-wiki update check");
+        return Ok(0);
+    }
+
+    if cfg!(windows) {
+        print!("{}", windows_update_guidance(&latest.name));
         return Ok(0);
     }
 
@@ -142,6 +147,26 @@ fn update_prompt(tag: &str, vault: &Path) -> String {
     )
 }
 
+fn binary_name() -> &'static str {
+    if cfg!(windows) {
+        "agents-wiki.exe"
+    } else {
+        "agents-wiki"
+    }
+}
+
+fn cargo_install_command(tag: &str) -> String {
+    format!("cargo install --git {REPO_URL} --tag {tag} --locked --force")
+}
+
+fn windows_update_guidance(tag: &str) -> String {
+    format!(
+        "agents-wiki {} -> {tag}\n\nWindows cannot safely replace the running agents-wiki.exe in place.\nRun this command from PowerShell to update:\n\n  {}\n\nThen run `agents-wiki doctor --repair` on your vault.\n",
+        env!("CARGO_PKG_VERSION"),
+        cargo_install_command(tag)
+    )
+}
+
 fn install_release(repo_url: &str, tag: &str, install_dir: &Path) -> Result<(), String> {
     let temp = TempUpdateDir::new()?;
     let checkout = temp.path().join("agents-wiki");
@@ -226,8 +251,8 @@ impl Drop for TempUpdateDir {
 #[cfg(test)]
 mod tests {
     use super::{
-        latest_tag_from_ls_remote, parse_release_tag, parse_version, update_prompt, TempUpdateDir,
-        Version,
+        binary_name, cargo_install_command, latest_tag_from_ls_remote, parse_release_tag,
+        parse_version, update_prompt, windows_update_guidance, TempUpdateDir, Version,
     };
     use crate::skills::SKILL_SYNC_COMMAND;
     use std::path::Path;
@@ -293,6 +318,27 @@ dddddddd\trefs/tags/not-a-version
         assert!(prompt.contains("doctor --repair"));
         assert!(prompt.contains("/tmp/wiki"));
         assert!(prompt.contains(SKILL_SYNC_COMMAND));
+    }
+
+    #[test]
+    fn binary_name_matches_platform() {
+        if cfg!(windows) {
+            assert_eq!(binary_name(), "agents-wiki.exe");
+        } else {
+            assert_eq!(binary_name(), "agents-wiki");
+        }
+    }
+
+    #[test]
+    fn windows_guidance_uses_cargo_install_with_tag() {
+        let command = cargo_install_command("v1.2.3");
+        assert_eq!(
+            command,
+            "cargo install --git https://github.com/webkitvn/agents-wiki.git --tag v1.2.3 --locked --force"
+        );
+        let guidance = windows_update_guidance("v1.2.3");
+        assert!(guidance.contains("agents-wiki.exe"));
+        assert!(guidance.contains(&command));
     }
 
     #[test]

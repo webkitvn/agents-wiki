@@ -20,14 +20,16 @@ Obsidian remains the knowledge environment. Obsidian CLI can support agent workf
 
 ## Install
 
+Cross-platform install from GitHub:
+
 ```bash
-./scripts/install.sh
+cargo install --git https://github.com/webkitvn/agents-wiki.git --locked --force
 ```
 
-Or install directly from GitHub:
+Checkout-local install on macOS/Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/webkitvn/agents-wiki/main/scripts/install.sh | bash
+./scripts/install.sh
 ```
 
 Common install option:
@@ -36,15 +38,36 @@ Common install option:
 ./scripts/install.sh --bin-dir "$HOME/.local/bin"
 ```
 
-The installer:
+Checkout-local install on Windows PowerShell:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+```
+
+Common Windows install option:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -BinDir "$env:USERPROFILE\.local\bin"
+```
+
+The checkout-local installers:
 
 - builds the Rust release binary
-- copies it to `~/.local/bin/agents-wiki` by default
+- copy it to `~/.local/bin/agents-wiki` on macOS/Linux by default
+- copy it to `%USERPROFILE%\.local\bin\agents-wiki.exe` on Windows by default
 
 Then configure and scaffold your vault location:
 
+macOS/Linux:
+
 ```bash
 agents-wiki init "$HOME/Documents/agents-wiki"
+```
+
+Windows PowerShell:
+
+```powershell
+agents-wiki init "$env:USERPROFILE\Documents\agents-wiki"
 ```
 
 Initialization scaffolds `AGENTS.md` as the vault contract and creates
@@ -66,15 +89,17 @@ Update an installed binary from the latest semver tag:
 agents-wiki update
 ```
 
-`update` asks for confirmation before changing anything. After a successful
-binary update, it runs `doctor --repair` on the resolved vault using the updated
-binary, then runs `npx skills add https://github.com/webkitvn/agents-wiki --skill`
-to update the bundled skill. If the binary is already current, `update` still
-runs the skill sync step. If skill sync fails after binary/repair work completes,
-the command prints a warning instead of treating the whole update as failed.
+On macOS/Linux, `update` asks for confirmation before changing anything. After a
+successful binary update, it runs `doctor --repair` on the resolved vault using
+the updated binary, then runs `npx skills add https://github.com/webkitvn/agents-wiki --skill`
+to update the bundled skill.
+
+On Windows, `update` checks the latest semver tag and prints a `cargo install`
+command. Run that command from PowerShell, then run `agents-wiki doctor --repair`
+on the vault. The CLI does not overwrite the running `agents-wiki.exe` in place.
 
 Use `--force` only when you intentionally want to overwrite an existing
-`~/.agents-wiki/config.yml` vault path:
+configured vault path:
 
 ```bash
 agents-wiki init "$HOME/Documents/agents-wiki" --force
@@ -84,9 +109,21 @@ agents-wiki init "$HOME/Documents/agents-wiki" --force
 
 Default config path:
 
+macOS/Linux:
+
 ```text
 ~/.agents-wiki/config.yml
 ```
+
+Windows:
+
+```text
+%APPDATA%\agents-wiki\config.yml
+```
+
+On Windows, the CLI also reads legacy `%USERPROFILE%\.agents-wiki\config.yml` if
+the primary `%APPDATA%` config does not exist. `init` always writes the primary
+config path.
 
 Schema:
 
@@ -98,8 +135,8 @@ Vault resolution precedence:
 
 1. `--vault /path/to/vault`
 2. `AGENTS_WIKI_VAULT=/path/to/vault`
-3. `~/.agents-wiki/config.yml`
-4. `~/Documents/agents-wiki`
+3. OS config file
+4. OS default documents vault
 
 ## Obsidian Web Clipper
 
