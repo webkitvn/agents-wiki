@@ -10,6 +10,10 @@ Local-first Obsidian wiki tooling for AI agents.
 
 The CLI handles predictable bookkeeping: ingesting immutable `raw/` sources, scaffolding pages in `wiki/`, maintaining `wiki/index.md` and `wiki/log.md`, and checking structure. The LLM handles synthesis: reading sources, updating entity / concept / question pages, adding cross-links, resolving contradictions, and deciding what knowledge belongs in the wiki. Versioning, deletion, and history are left to git.
 
+By default, `raw/` sources stay in their original language and the LLM writes the
+generated `wiki/` layer in English. The vault's `AGENTS.md` is the authoritative
+contract for this policy.
+
 The page taxonomy (which `kind`s exist, their `wiki/` folders, and `index.md` sections) is configured in the `taxonomy:` frontmatter of the vault's `AGENTS.md`, so structure can be adapted per domain without recompiling. Edit it, then run `agents-wiki doctor --repair`.
 
 Obsidian remains the knowledge environment. Obsidian CLI can support agent workflows with vault-native context such as opening files, backlinks, unresolved links, tags, tasks, properties, search context, and plugin commands. Those capabilities should accelerate the agent, not replace the filesystem-first safety model that keeps `agents-wiki` deterministic.
@@ -42,6 +46,10 @@ Then configure and scaffold your vault location:
 ```bash
 agents-wiki init "$HOME/Documents/agents-wiki"
 ```
+
+Initialization scaffolds `AGENTS.md` as the vault contract and creates
+`GEMINI.md` / `CLAUDE.md` compatibility aliases that point agents back to
+`AGENTS.md`.
 
 After initialization, the CLI also runs:
 
@@ -118,7 +126,7 @@ If the clipper popup still shows `Clippings`, change the popup folder field to
 
 ## Usage
 
-For the full version-matched command reference:
+For the full version-matched AI operating guide:
 
 ```bash
 agents-wiki guide

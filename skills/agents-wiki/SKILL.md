@@ -6,11 +6,15 @@ license: MIT
 
 # agents-wiki CLI
 
-Use the embedded, version-matched CLI guide:
+Use the embedded, version-matched AI operating guide:
 
 ```bash
 agents-wiki guide
 ```
 
-The full guide is embedded in the binary from `skills/agents-wiki/GUIDE.md`, so
-the installed command and its usage guide stay in sync after each build.
+The guide is embedded in the binary from `skills/agents-wiki/GUIDE.md`, so the
+installed command and its operating instructions stay in sync after each build.
+
+Before maintaining a vault, read its `AGENTS.md` contract. `GEMINI.md` and
+`CLAUDE.md` are compatibility aliases, not separate contracts. Keep `raw/`
+immutable and write the generated `wiki/` layer in English.

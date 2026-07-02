@@ -21,6 +21,8 @@ use crate::{
 
 const DEFAULT_STALE_DAYS: i64 = 90;
 const GIT_COMMAND: &str = "git";
+const CONTRACT_ALIAS_TARGET: &str = "AGENTS.md";
+const CONTRACT_ALIASES: &[&str] = &["GEMINI.md", "CLAUDE.md"];
 
 // ─── Typed report types ───────────────────────────────────────────────────────
 
@@ -552,6 +554,11 @@ fn build_doctor_report(ctx: &Ctx) -> DoctorReport {
             issues.push(DoctorIssue::error("missing_file", ctx.rel(&file)));
         }
     }
+    for alias in CONTRACT_ALIASES {
+        if let Some(issue) = contract_alias_issue(ctx, alias) {
+            issues.push(issue);
+        }
+    }
     if !ctx.manifest().exists() {
         issues.push(DoctorIssue::warning_path(
             "missing_manifest",
@@ -620,6 +627,11 @@ pub fn repair_doctor(ctx: &Ctx) -> Result<Vec<String>, String> {
     ] {
         if write_if_missing(&path, content)? {
             repaired.push(format!("Created `{}`.", ctx.rel(&path)));
+        }
+    }
+    for alias in CONTRACT_ALIASES {
+        if let Some(item) = ensure_contract_alias(ctx, alias)? {
+            repaired.push(item);
         }
     }
     if manifest::ensure_exists(ctx)? {
@@ -768,6 +780,99 @@ fn write_if_missing(path: &Path, content: String) -> Result<bool, String> {
     Ok(true)
 }
 
+fn contract_alias_issue(ctx: &Ctx, alias: &str) -> Option<DoctorIssue> {
+    let path = ctx.vault.join(alias);
+    let Ok(meta) = fs::symlink_metadata(&path) else {
+        return Some(DoctorIssue::warning_path(
+            "missing_contract_alias",
+            alias,
+            true,
+        ));
+    };
+    if meta.file_type().is_symlink() {
+        return match fs::read_link(&path) {
+            Ok(target) if target == Path::new(CONTRACT_ALIAS_TARGET) => None,
+            _ => Some(DoctorIssue::warning_path(
+                "contract_alias_conflict",
+                alias,
+                false,
+            )),
+        };
+    }
+    if meta.is_file() && read_text(&path).trim() == contract_alias_pointer().trim() {
+        return None;
+    }
+    Some(DoctorIssue::warning_path(
+        "contract_alias_conflict",
+        alias,
+        false,
+    ))
+}
+
+fn ensure_contract_alias(ctx: &Ctx, alias: &str) -> Result<Option<String>, String> {
+    let path = ctx.vault.join(alias);
+    match fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let target = fs::read_link(&path).map_err(|err| fs_err(&path, "read link", err))?;
+            if target == Path::new(CONTRACT_ALIAS_TARGET) {
+                Ok(None)
+            } else {
+                Ok(Some(format!(
+                    "Skipped `{alias}`: existing symlink does not point to `{CONTRACT_ALIAS_TARGET}`."
+                )))
+            }
+        }
+        Ok(meta)
+            if meta.is_file() && read_text(&path).trim() == contract_alias_pointer().trim() =>
+        {
+            Ok(None)
+        }
+        Ok(_) => Ok(Some(format!(
+            "Skipped `{alias}`: existing path is not an agents-wiki contract alias."
+        ))),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => create_contract_alias(&path, alias),
+        Err(err) => Err(fs_err(&path, "inspect", err)),
+    }
+}
+
+fn create_contract_alias(path: &Path, alias: &str) -> Result<Option<String>, String> {
+    let parent = path.parent().unwrap();
+    fs::create_dir_all(parent).map_err(|err| fs_err(parent, "create directory", err))?;
+    match symlink_contract_alias(path) {
+        Ok(()) => Ok(Some(format!("Created `{alias}` alias."))),
+        Err(_) => {
+            fs::write(path, contract_alias_pointer()).map_err(|err| fs_err(path, "write", err))?;
+            Ok(Some(format!(
+                "Created `{alias}` pointer file because symlink was unavailable."
+            )))
+        }
+    }
+}
+
+#[cfg(unix)]
+fn symlink_contract_alias(path: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(CONTRACT_ALIAS_TARGET, path)
+}
+
+#[cfg(windows)]
+fn symlink_contract_alias(path: &Path) -> io::Result<()> {
+    std::os::windows::fs::symlink_file(CONTRACT_ALIAS_TARGET, path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn symlink_contract_alias(_path: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "symlink unsupported on this platform",
+    ))
+}
+
+fn contract_alias_pointer() -> String {
+    format!(
+        "# Agents Wiki Contract Alias\n\nUse `{CONTRACT_ALIAS_TARGET}` as the source of truth for this vault.\n"
+    )
+}
+
 fn index_skeleton(ctx: &Ctx) -> String {
     let mut text = format!(
         "---\ntitle: Wiki Index\ncreated: {}\ntype: wiki-index\ntags: [llm-wiki, index]\n---\n\n# Wiki Index\n",
@@ -813,6 +918,21 @@ to maintain it. You own the wiki; co-evolve this file as the conventions change.
 - `wiki/` — agent-maintained markdown, organised by the `taxonomy` above.
 - `wiki/index.md` — the catalog (one section per taxonomy kind).
 - `wiki/log.md` — the append-only timeline of ingests, pages, and lint passes.
+- `GEMINI.md` and `CLAUDE.md` — compatibility aliases for tools that read those
+  filenames. `AGENTS.md` remains the source of truth.
+
+## Language policy
+
+- MUST write the entire `wiki/` layer in English: pages, summaries, titles, index
+  entries, log entries, questions, reviews, entity pages, concept pages, and notes.
+- Keep `raw/` sources in their original language. NEVER translate, rewrite, or
+  normalize source files under `raw/`.
+- When a source is not English, translate its meaning into clear English synthesis.
+  Do not produce literal sentence-by-sentence translation unless the task asks for it.
+- Preserve original-language proper nouns, product names, technical terms, and short
+  quotations only when needed for accuracy.
+- If translation nuance matters, cite the `raw/` source and include the original term
+  in parentheses.
 
 ## Page conventions
 
@@ -836,9 +956,9 @@ to maintain it. You own the wiki; co-evolve this file as the conventions change.
 ## Operations
 
 - Ingest: `agents-wiki new-source` then `agents-wiki source-summary`. The CLI files the
-  summary into `index.md` and `log.md`. Then YOU do the synthesis — a single source often
-  touches 10-15 pages: update related entity/concept pages, add cross-links, and open a
-  `review` when a new source contradicts an existing claim.
+  summary into `index.md` and `log.md`. Then YOU do the English synthesis — a single source
+  often touches 10-15 pages: update related entity/concept pages, add cross-links, and open
+  a `review` when a new source contradicts an existing claim.
 - Query: `agents-wiki search` to find pages, read them, answer with citations to `raw/`
   sources. File durable answers back with `agents-wiki page question "..."` so they compound.
 - Lint: `agents-wiki lint` surfaces missing index entries, missing citations, duplicate ids,
@@ -1070,11 +1190,71 @@ mod tests {
         assert!(ctx.log().exists());
         assert!(ctx.agents().exists());
         assert!(ctx.entrypoint().exists());
+        for alias in CONTRACT_ALIASES {
+            assert_contract_alias(&ctx, alias);
+            assert!(
+                repaired
+                    .iter()
+                    .any(|item| item.starts_with(&format!("Created `{alias}` "))),
+                "missing repair entry for {alias}\nactual: {repaired:#?}"
+            );
+        }
+
+        let agents = read_text(&ctx.agents());
+        assert!(agents.contains("## Language policy"));
+        assert!(agents.contains("MUST write the entire `wiki/` layer in English"));
+        assert!(agents.contains("Keep `raw/` sources in their original language"));
 
         let repaired_again = repair_doctor(&ctx).unwrap();
         assert!(!repaired_again
             .iter()
             .any(|item| item == "Created `wiki/index.md`."));
+        for alias in CONTRACT_ALIASES {
+            assert!(
+                !repaired_again
+                    .iter()
+                    .any(|item| item.starts_with(&format!("Created `{alias}` "))),
+                "alias must be idempotent: {alias}\nactual: {repaired_again:#?}"
+            );
+        }
+
+        fs::remove_dir_all(vault).unwrap();
+    }
+
+    fn assert_contract_alias(ctx: &Ctx, alias: &str) {
+        let path = ctx.vault.join(alias);
+        let meta = fs::symlink_metadata(&path).expect("alias exists");
+        if meta.file_type().is_symlink() {
+            assert_eq!(fs::read_link(&path).unwrap(), PathBuf::from("AGENTS.md"));
+        } else {
+            assert_eq!(read_text(&path).trim(), contract_alias_pointer().trim());
+        }
+    }
+
+    #[test]
+    fn repair_doctor_does_not_overwrite_existing_contract_alias_file() {
+        let vault = temp_vault("custom-contract-alias");
+        fs::create_dir_all(&vault).unwrap();
+        fs::write(vault.join("GEMINI.md"), "# Custom Gemini Instructions\n").unwrap();
+        let ctx = Ctx::new(vault.clone());
+
+        let repaired = repair_doctor(&ctx).unwrap();
+
+        assert_eq!(
+            read_text(&vault.join("GEMINI.md")),
+            "# Custom Gemini Instructions\n"
+        );
+        assert!(
+            repaired.iter().any(|item| item
+                == "Skipped `GEMINI.md`: existing path is not an agents-wiki contract alias."),
+            "expected custom alias skip\nactual: {repaired:#?}"
+        );
+        assert_contract_alias(&ctx, "CLAUDE.md");
+
+        let report = build_doctor_report(&ctx);
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == "contract_alias_conflict" && issue.path.as_deref() == Some("GEMINI.md")
+        }));
 
         fs::remove_dir_all(vault).unwrap();
     }
